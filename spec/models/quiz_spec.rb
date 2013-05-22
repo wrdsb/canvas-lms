@@ -23,23 +23,75 @@ describe Quiz do
     course
   end
 
+  describe ".mark_quiz_edited" do
+    it "should mark a quiz as having unpublished changes" do
+      quiz = @course.quizzes.create! :title => "hello"
+      quiz.published_at = Time.now
+      quiz.publish!
+      quiz.unpublished_changes?.should be_false
+
+      Quiz.mark_quiz_edited(quiz.id)
+      quiz.reload.unpublished_changes?.should be_true
+    end
+  end
+
+  describe "#publish!" do
+    it "sets the workflow state to available and save!s the quiz" do
+      quiz = Quiz.new(:title => "hello")
+      quiz.expects(:save!).once
+      quiz.publish!
+      quiz.workflow_state.should == 'available'
+    end
+  end
+
   it "should infer the times if none given" do
-    q = factory_with_protected_attributes(@course.quizzes, :title => "new quiz", :due_at => "Sep 3 2008 12:00am", :quiz_type => 'assignment', :workflow_state => 'available')
+    q = factory_with_protected_attributes(@course.quizzes,
+                                          :title => "new quiz",
+                                          :due_at => "Sep 3 2008 12:00am",
+                                          :lock_at => "Sep 3 2008 12:00am",
+                                          :unlock_at => "Sep 3 2008 12:00am",
+                                          :quiz_type => 'assignment',
+                                          :workflow_state => 'available')
+    due_at = q.due_at
     q.due_at.should == Time.parse("Sep 3 2008 12:00am UTC")
+    lock_at = q.lock_at
+    unlock_at = q.unlock_at
+    q.lock_at.should == Time.parse("Sep 3 2008 12:00am UTC")
     q.assignment.due_at.should == Time.parse("Sep 3 2008 12:00am UTC")
     q.infer_times
     q.save!
-    q.due_at.should == Time.parse("Sep 3 2008 11:59pm UTC")
-    q.assignment.due_at.should == Time.parse("Sep 3 2008 11:59pm UTC")
+    q.due_at.should == due_at.end_of_day
+    q.assignment.due_at.should == due_at.end_of_day
+    q.lock_at.should == lock_at.end_of_day
+    q.assignment.lock_at.should == lock_at.end_of_day
+    # Unlock at should not be fudged so teacher's can say this assignment
+    # is available at 12 am.
+    q.unlock_at.should == unlock_at.midnight
+    q.assignment.unlock_at.should == unlock_at.midnight
   end
 
   it "should set the due time to 11:59pm if only given a date" do
-    params = { :quiz => { :title => "Test Quiz", :due_at => Time.zone.today.to_s } }
+    params = { :quiz => {
+      :title => "Test Quiz",
+      :due_at => Time.zone.today.to_s,
+      :lock_at => Time.zone.today.to_s,
+      :unlock_at => Time.zone.today.to_s
+      }
+    }
     q = @course.quizzes.create!(params[:quiz])
+    q.infer_times
     q.due_at.should be_an_instance_of ActiveSupport::TimeWithZone
     q.due_at.time_zone.should == Time.zone
     q.due_at.hour.should eql 23
     q.due_at.min.should eql 59
+    q.lock_at.time_zone.should == Time.zone
+    q.lock_at.hour.should eql 23
+    q.lock_at.min.should eql 59
+    # Unlock at should not be fudged so teacher's can say this assignment
+    # is available at 12 am.
+    q.unlock_at.time_zone.should == Time.zone
+    q.unlock_at.hour.should eql 0
+    q.unlock_at.min.should eql 0
   end
 
   it "should not set the due time to 11:59pm if passed a time of midnight" do
@@ -246,7 +298,7 @@ describe Quiz do
 
     qq1 = q.quiz_questions.create!(:question_data => { :name => "test 1" }, :quiz_group => g)
     # make sure we handle sorting with nil positions
-    QuizQuestion.update_all({:position => nil}, {:id => qq1.id})
+    QuizQuestion.where(:id => qq1).update_all(:position => nil)
 
     q.quiz_questions.create!(:question_data => { :name => "test 2" }, :quiz_group => g)
     q.quiz_questions.create!(:question_data => { :name => "test 3" })
@@ -488,240 +540,6 @@ describe Quiz do
     q.quiz_submissions.size.should == 1
     q.quiz_submissions.first.submission.should_not be_nil
     q.quiz_submissions.first.submission.assignment.should == q.assignment
-  end
-
-  context 'statistics' do
-    it 'should calculate mean/stddev as expected with no submissions' do
-      stats = @course.quizzes.new.statistics
-      stats[:submission_score_average].should be_nil
-      stats[:submission_score_high].should be_nil
-      stats[:submission_score_low].should be_nil
-      stats[:submission_score_stdev].should be_nil
-    end
-
-    it 'should calculate mean/stddev as expected with a few submissions' do
-      q = @course.quizzes.new
-      q.save!
-      @user1 = User.create! :name => "some_user 1"
-      @user2 = User.create! :name => "some_user 2"
-      @user3 = User.create! :name => "some_user 2"
-      student_in_course :course => @course, :user => @user1
-      student_in_course :course => @course, :user => @user2
-      student_in_course :course => @course, :user => @user3
-      sub = q.generate_submission(@user1)
-      sub.workflow_state = 'complete'
-      sub.submission_data = [{ :points => 15, :text => "", :correct => "undefined", :question_id => -1 }]
-      sub.with_versioning(true, &:save!)
-      stats = q.statistics
-      stats[:submission_score_average].should == 15
-      stats[:submission_score_high].should == 15
-      stats[:submission_score_low].should == 15
-      stats[:submission_score_stdev].should == 0
-      sub = q.generate_submission(@user2)
-      sub.workflow_state = 'complete'
-      sub.submission_data = [{ :points => 17, :text => "", :correct => "undefined", :question_id => -1 }]
-      sub.with_versioning(true, &:save!)
-      stats = q.statistics
-      stats[:submission_score_average].should == 16
-      stats[:submission_score_high].should == 17
-      stats[:submission_score_low].should == 15
-      stats[:submission_score_stdev].should == 1
-      sub = q.generate_submission(@user3)
-      sub.workflow_state = 'complete'
-      sub.submission_data = [{ :points => 20, :text => "", :correct => "undefined", :question_id => -1 }]
-      sub.with_versioning(true, &:save!)
-      stats = q.statistics
-      stats[:submission_score_average].should be_close(17 + 1.0/3, 0.0000000001)
-      stats[:submission_score_high].should == 20
-      stats[:submission_score_low].should == 15
-      stats[:submission_score_stdev].should be_close(Math::sqrt(4 + 2.0/9), 0.0000000001)
-    end
-
-    it "should use the last completed submission, even if the current submission is in progress" do
-      student_in_course(:active_all => true)
-      q = @course.quizzes.create!
-      q.quiz_questions.create!(:question_data => { :name => "test 1" })
-      q.generate_quiz_data
-      q.save!
-
-      # one complete submission
-      qs = q.generate_submission(@student)
-      qs.grade_submission
-
-      # and one in progress
-      qs = q.generate_submission(@student)
-
-      stats = q.statistics(false)
-      stats[:submission_count].should == 1
-    end
-
-    context 'csv' do
-      before(:each) do
-        student_in_course(:active_all => true)
-        @quiz = @course.quizzes.create!
-        @quiz.quiz_questions.create!(:question_data => { :name => "test 1" })
-        @quiz.generate_quiz_data
-        @quiz.save!
-      end
-
-      it 'should include previous versions even if the current version is incomplete' do
-        # one complete submission
-        qs = @quiz.generate_submission(@student)
-        qs.grade_submission
-
-        # and one in progress
-        @quiz.generate_submission(@student)
-
-        stats = FasterCSV.parse(@quiz.statistics_csv(:include_all_versions => true))
-        # format for row is row_name, '', data1, data2, ...
-        stats.first.length.should == 3
-      end
-
-      it 'should not include user data for anonymous surveys' do
-        # one complete submission
-        qs = @quiz.generate_submission(@student)
-        qs.grade_submission
-
-        # and one in progress
-        @quiz.generate_submission(@student)
-
-        stats = FasterCSV.parse(@quiz.statistics_csv(:include_all_versions => true, :anonymous => true))
-        # format for row is row_name, '', data1, data2, ...
-        stats.first.length.should == 3
-        stats[0][0].should == "section"
-      end
-
-      it 'should have sections in quiz statistics_csv' do
-        #enroll user in multiple sections
-        pseudonym = pseudonym(@student)
-        @student.pseudonym.sis_user_id = "user_sis_id_01"
-        @student.pseudonym.save!
-        section1 = @course.course_sections.first
-        section1.sis_source_id = 'SISSection01'
-        section1.save!
-        section2 = CourseSection.new(:course => @course, :name => "section2")
-        section2.sis_source_id = 'SISSection02'
-        section2.save!
-        @course.enroll_user(@student, "StudentEnrollment", :enrollment_state => 'active', :allow_multiple_enrollments => true, :section => section2)
-        # one complete submission
-        qs = @quiz.generate_submission(@student)
-        qs.grade_submission
-
-        stats = FasterCSV.parse(@quiz.statistics_csv(:include_all_versions => true))
-        # format for row is row_name, '', data1, data2, ...
-        stats[0].should == ["name", "", "nobody@example.com"]
-        stats[1].should == ["id", "", @student.id.to_s]
-        stats[2].should == ["sis_id", "", "user_sis_id_01"]
-        expect_multi_value_row(stats[3], "section", ["section2", "Unnamed Course"])
-        expect_multi_value_row(stats[4], "section_id", [section1.id, section2.id])
-        expect_multi_value_row(stats[5], "section_sis_id", ["SISSection02", "SISSection01"])
-        stats.first.length.should == 3
-      end
-
-      def expect_multi_value_row(row, expected_name, expected_values)
-        row[0..1].should == [expected_name, ""]
-        row[2].split(', ').sort.should == expected_values.map(&:to_s).sort
-      end
-
-      it 'should not include previous versions by default' do
-        # two complete submissions
-        qs = @quiz.generate_submission(@student)
-        qs.grade_submission
-        qs = @quiz.generate_submission(@student)
-        qs.grade_submission
-
-        stats = FasterCSV.parse(@quiz.statistics_csv)
-        # format for row is row_name, '', data1, data2, ...
-        stats.first.length.should == 3
-      end
-
-      it 'should deal with incomplete fill-in-multiple-blanks questions' do
-        @quiz.quiz_questions.create!(:question_data => { :name => "test 2",
-          :question_type => 'fill_in_multiple_blanks_question',
-          :question_text => "[ans0]",
-          :answers =>
-            {'answer_0' => {'answer_text' => 'foo', 'blank_id' => 'ans0', 'answer_weight' => '100'}}})
-        @quiz.quiz_questions.create!(:question_data => { :name => "test 3",
-          :question_type => 'fill_in_multiple_blanks_question',
-          :question_text => "[ans0] [ans1]",
-          :answers =>
-             {'answer_0' => {'answer_text' => 'bar', 'blank_id' => 'ans0', 'answer_weight' => '100'},
-              'answer_1' => {'answer_text' => 'baz', 'blank_id' => 'ans1', 'answer_weight' => '100'}}})
-        @quiz.generate_quiz_data
-        @quiz.save!
-        @quiz.quiz_questions.size.should == 3
-        qs = @quiz.generate_submission(@student)
-        # submission will not answer question 2 and will partially answer question 3
-        qs.submission_data = {
-            "question_#{@quiz.quiz_questions[2].id}_#{AssessmentQuestion.variable_id('ans1')}" => 'baz'
-        }
-        qs.grade_submission
-        stats = FasterCSV.parse(@quiz.statistics_csv)
-        stats.size.should == 16 # 3 questions * 2 lines + ten more (name, id, sis_id, section, section_id, section_sis_id, submitted, correct, incorrect, score)
-        stats[11].size.should == 3
-        stats[11][2].should == ',baz'
-      end
-
-      it 'should contain answers to numerical questions' do
-        @quiz.quiz_questions.create!(:question_data => { :name => "numerical_question",
-          :question_type => 'numerical_question',
-          :question_text => "[num1]",
-          :answers => {'answer_0' => {:numerical_answer_type => 'exact_answer'}}})
-
-        @quiz.quiz_questions.last.question_data[:answers].first[:exact] = 5
-
-        @quiz.generate_quiz_data
-        @quiz.save!
-
-        qs = @quiz.generate_submission(@student)
-        qs.submission_data = {
-          "question_#{@quiz.quiz_questions[1].id}" => 5
-        }
-        qs.grade_submission
-
-        stats = FasterCSV.parse(@quiz.statistics_csv)
-        stats[9][2].should == '5'
-      end
-    end
-
-    it 'should strip tags from html multiple-choice/multiple-answers' do
-      student_in_course(:active_all => true)
-      q = @course.quizzes.create!(:title => "new quiz")
-      q.quiz_questions.create!(:question_data => {:name => 'q1', :points_possible => 1, 'question_type' => 'multiple_choice_question', 'answers' => {'answer_0' => {'answer_text' => '', 'answer_html' => '<em>zero</em>', 'answer_weight' => '100'}, 'answer_1' => {'answer_text' => "", 'answer_html' => "<p>one</p>", 'answer_weight' => '0'}}})
-      q.quiz_questions.create!(:question_data => {:name => 'q2', :points_possible => 1, 'question_type' => 'multiple_answers_question', 'answers' => {'answer_0' => {'answer_text' => '', 'answer_html' => "<a href='http://example.com/caturday.gif'>lolcats</a>", 'answer_weight' => '100'}, 'answer_1' => {'answer_text' => 'lolrus', 'answer_weight' => '100'}}})
-      q.generate_quiz_data
-      q.save
-      qs = q.generate_submission(@student)
-      qs.submission_data = {
-          "question_#{q.quiz_data[0][:id]}" => "#{q.quiz_data[0][:answers][0][:id]}",
-          "question_#{q.quiz_data[1][:id]}_answer_#{q.quiz_data[1][:answers][0][:id]}" => "1",
-          "question_#{q.quiz_data[1][:id]}_answer_#{q.quiz_data[1][:answers][1][:id]}" => "1"
-      }
-      qs.grade_submission
-
-      # visual statistics
-      stats = q.statistics
-      stats[:questions].length.should == 2
-      stats[:questions][0].length.should == 2
-      stats[:questions][0][0].should == "question"
-      stats[:questions][0][1][:answers].length.should == 2
-      stats[:questions][0][1][:answers][0][:responses].should == 1
-      stats[:questions][0][1][:answers][0][:text].should == "zero"
-      stats[:questions][0][1][:answers][1][:responses].should == 0
-      stats[:questions][0][1][:answers][1][:text].should == "one"
-      stats[:questions][1].length.should == 2
-      stats[:questions][1][0].should == "question"
-      stats[:questions][1][1][:answers].length.should == 2
-      stats[:questions][1][1][:answers][0][:responses].should == 1
-      stats[:questions][1][1][:answers][0][:text].should == "lolcats"
-      stats[:questions][1][1][:answers][1][:responses].should == 1
-      stats[:questions][1][1][:answers][1][:text].should == "lolrus"
-
-      # csv statistics
-      stats = FasterCSV.parse(q.statistics_csv)
-      stats[7][2].should == "zero"
-      stats[9][2].should == "lolcats,lolrus"
-    end
   end
 
   context "clone_for" do
@@ -970,6 +788,21 @@ describe Quiz do
     end
   end
 
+  describe "#group_category_id" do
+
+    it "returns the assignment's group category id if it has an assignment" do
+      quiz = Quiz.new(:title => "Assignment Group Category Quiz")
+      quiz.expects(:assignment).returns stub(:group_category_id => 1)
+      quiz.group_category_id.should == 1
+    end
+
+    it "returns nil if it doesn't have an assignment" do
+      quiz = Quiz.new(:title => "Quiz w/o assignment")
+      quiz.group_category_id.should be_nil
+    end
+
+  end
+
   describe "linking overrides with assignments" do
     let(:course) { course_model }
     let(:quiz) { quiz_model(:course => course, :due_at => 5.days.from_now).reload }
@@ -1014,6 +847,7 @@ describe Quiz do
         quiz.save
         override.reload
         override_student.reload
+        quiz.assignment.reload
       end
 
       context "override" do
@@ -1024,6 +858,15 @@ describe Quiz do
         it "has the quiz's assignment" do
           override.assignment.should == quiz.assignment
         end
+
+        it "has the quiz's assignment's version number" do
+          override.assignment_version.should == quiz.assignment.version_number
+        end
+
+        it "has the quiz's version number" do
+          override.quiz_version.should == quiz.version_number
+        end
+
       end
 
       context "override student" do
@@ -1045,6 +888,74 @@ describe Quiz do
         quiz.save
         quiz.expects(:link_assignment_overrides).never
         quiz.save
+      end
+    end
+
+    context "when the assignment ID changes" do
+      it "links overrides" do
+        quiz.expects(:link_assignment_overrides).once
+        quiz.workflow_state = 'available'
+        quiz.save!
+        quiz.expects(:link_assignment_overrides).once
+        quiz.assignment = nil
+        quiz.assignment_id = 345
+        quiz.save!
+      end
+    end
+  end
+
+  context "custom validations" do
+    context "quiz_type" do
+      it "should not save an invalid quiz_type" do
+        quiz = @course.quizzes.create! :title => "test quiz"
+        quiz.quiz_type = "totally_invalid_quiz_type"
+        quiz.save.should be_false
+        quiz.errors["invalid_quiz_type"].should be_present
+      end
+
+      it "should not validate quiz_type if not changed" do
+        quiz = @course.quizzes.build :title => "test quiz", :quiz_type => 'invalid'
+        quiz.save(false).should be_true  # save without validation
+        quiz.reload
+        quiz.save.should be_true
+        quiz.errors.should be_blank
+        quiz.quiz_type.should == 'invalid'
+      end
+    end
+
+    context "ip_filter" do
+      it "should not save an invalid ip_filter" do
+        quiz = @course.quizzes.create! :title => "test quiz"
+        quiz.ip_filter = "999.999.1942.489"
+        quiz.save.should be_false
+        quiz.errors["invalid_ip_filter"].should be_present
+      end
+
+      it "should not validate ip_filter if not changed" do
+        quiz = @course.quizzes.build :title => "test quiz", :ip_filter => '123.fourfivesix'
+        quiz.save(false).should be_true  # save without validation
+        quiz.reload
+        quiz.save.should be_true
+        quiz.errors.should be_blank
+        quiz.ip_filter.should == '123.fourfivesix'
+      end
+    end
+
+    context "hide_results" do
+      it "should not save an invalid hide_results" do
+        quiz = @course.quizzes.create! :title => "test quiz"
+        quiz.hide_results = "totally_invalid_value"
+        quiz.save.should be_false
+        quiz.errors["invalid_hide_results"].should be_present
+      end
+
+      it "should not validate hide_results if not changed" do
+        quiz = @course.quizzes.build :title => "test quiz", :hide_results => 'invalid'
+        quiz.save(false).should be_true  # save without validation
+        quiz.reload
+        quiz.save.should be_true
+        quiz.errors.should be_blank
+        quiz.hide_results.should == 'invalid'
       end
     end
   end

@@ -30,7 +30,6 @@ define [
       _.each @instances, (view) ->
         view.expand() unless view.model.get 'parent'
 
-
     els:
       '.discussion_entry:first': '$entryContent'
       '.replies:first': '$replies'
@@ -58,6 +57,7 @@ define [
       @$el.attr 'id', "entry-#{@model.get 'id'}"
       @model.on 'change:deleted', @toggleDeleted
       @model.on 'change:read_state', @toggleReadState
+      @model.on 'change:editor', @render
 
     handleDeclarativeEvent: (event) ->
       $el = $ event.currentTarget
@@ -78,7 +78,15 @@ define [
         no
 
     toJSON: ->
-      @model.attributes
+      json = @model.attributes
+      json.edited_at = $.parseFromISO(json.updated_at).datetime_formatted
+      if json.editor
+        json.editor_name = json.editor.display_name
+        json.editor_href = "href=\"#{json.editor.html_url}\""
+      else
+        json.editor_name = I18n.t 'unknown', 'Unknown'
+        json.editor_href = ""
+      json
 
     toggleReadState: (model, read_state) =>
       @$entryContent.toggleClass 'unread', read_state is 'unread'
@@ -108,6 +116,9 @@ define [
 
     toggleDeleted: (model, deleted) =>
       @$entryContent.toggleClass 'deleted-discussion-entry', deleted
+      if deleted
+        @model.set('updated_at', (new Date).toISOString())
+        @model.set('editor', ENV.current_user)
 
     afterRender: ->
       super
@@ -132,6 +143,7 @@ define [
         descendants: descendants
         collection: page
         threaded: @options.threaded
+        showMoreDescendants: @options.showMoreDescendants
       @treeView.render()
 
     renderDescendantsLink: ->
@@ -168,7 +180,7 @@ define [
       @editor.edit() if not @editor.editing
 
     addReply: (event, $el) ->
-      @reply ?= new Reply this
+      @reply ?= new Reply this, focus: true
       @model.set 'notification', ''
       @reply.edit()
       @reply.on 'save', (entry) =>

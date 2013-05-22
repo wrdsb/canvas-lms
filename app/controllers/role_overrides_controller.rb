@@ -104,7 +104,7 @@ class RoleOverridesController < ApplicationController
       states = %w(active) if states.empty?
       roles = []
       roles += Role.built_in_roles if states.include?('active')
-      roles += @context.roles.scoped(:conditions => {:workflow_state => states}, :order => :id).all
+      roles += @context.roles.where(:workflow_state => states).order(:id).all
       roles = Api.paginate(roles, self, route)
       render :json => roles.collect{|role| role_json(@context, role, @current_user, session)}
     end
@@ -134,6 +134,7 @@ class RoleOverridesController < ApplicationController
         custom_roles.select { |cr| cr.base_role_type == role_hash[:base_role_name] }.map do |cr|
           json = role_json(@context, cr, @current_user, session)
           json[:id] = cr.name
+          json[:base_role_type_label] = role.label
           course_role_data << json
         end
       end
@@ -142,6 +143,7 @@ class RoleOverridesController < ApplicationController
       js_env :COURSE_ROLES => course_role_data
       js_env :ACCOUNT_PERMISSIONS => account_permissions(@context)
       js_env :COURSE_PERMISSIONS => course_permissions(@context)
+      js_env :IS_SITE_ADMIN => @context.site_admin?
     end
   end
 
@@ -197,6 +199,7 @@ class RoleOverridesController < ApplicationController
   #     manage_global_outcomes           -- Manage learning outcomes
   #     manage_jobs                      -- Manage background jobs
   #     manage_role_overrides            -- Manage permissions
+  #     manage_storage_quotas            -- Set storage quotas for courses, groups, and users
   #     manage_sis                       -- Import and manage SIS data
   #     manage_site_settings             -- Manage site-wide and plugin settings
   #     manage_user_logins               -- Modify login details for users
@@ -222,13 +225,14 @@ class RoleOverridesController < ApplicationController
   #     manage_calendar                  -- [sTADo] Add, edit and delete events on the course calendar
   #     manage_content                   -- [ TADo] Manage all other course content
   #     manage_files                     -- [ TADo] Manage (add / edit / delete) course files
-  #     manage_grades                    -- [ TA  ] Edit grades (includes assessing rubrics)
+  #     manage_grades                    -- [ TA  ] Edit grades
   #     manage_groups                    -- [ TAD ] Manage (create / edit / delete) groups
   #     manage_interaction_alerts        -- [ Ta  ] Manage alerts
   #     manage_outcomes                  -- [sTaDo] Manage learning outcomes
   #     manage_sections                  -- [ TaD ] Manage (create / edit / delete) course sections
   #     manage_students                  -- [ TAD ] Add/remove students for the course
   #     manage_user_notes                -- [ TA  ] Manage faculty journal entries
+  #     manage_rubrics                   -- [ TAD ] Edit assessing rubrics
   #     manage_wiki                      -- [ TADo] Manage wiki (add / edit / delete pages)
   #     read_forum                       -- [STADO] View discussions
   #     moderate_forum                   -- [sTADo] Moderate discussions (delete/edit others' posts, lock topics)
@@ -237,7 +241,8 @@ class RoleOverridesController < ApplicationController
   #     read_reports                     -- [sTAD ] View usage reports for the course
   #     read_roster                      -- [STADo] See the list of users
   #     read_sis                         -- [sTa  ] Read SIS data
-  #     send_messages                    -- [STADo] Send messages to course members
+  #     send_messages                    -- [STADo] Send messages to individual course members
+  #     send_messages_all                -- [sTADo] Send messages to the entire class
   #     view_all_grades                  -- [ TAd ] View all grades
   #     view_group_pages                 -- [sTADo] View the group pages of all student groups
   #
@@ -254,7 +259,7 @@ class RoleOverridesController < ApplicationController
   #   upstream. May occur multiple times with unique values for <X>.
   #
   # @example_request
-  #   curl 'http://<canvas>/api/v1/accounts/<account_id>/roles.json' \
+  #   curl 'http://<canvas>/api/v1/accounts/<account_id>/roles.json' \ 
   #        -H "Authorization: Bearer <token>" \ 
   #        -F 'role=New Role' \ 
   #        -F 'permissions[read_course_content][explicit]=1' \ 
@@ -289,7 +294,7 @@ class RoleOverridesController < ApplicationController
       return
     end
     # remove old role overrides that were associated with this role name
-    @context.role_overrides.scoped(:conditions => {:enrollment_type => @role}).delete_all
+    @context.role_overrides.where(:enrollment_type => @role).delete_all
 
     unless api_request?
       redirect_to named_context_url(@context, :context_permissions_url, :account_roles => params[:account_roles])
@@ -299,7 +304,14 @@ class RoleOverridesController < ApplicationController
     # allow setting permissions immediately through API
     set_permissions_for(@role, @context, params[:permissions])
 
-    render :json => role_json(@context, role, @current_user, session)
+    # Add base_role_type_label for this role
+    json = role_json(@context, role, @current_user, session)
+
+    if base_role = RoleOverride.enrollment_types.find{|br| br[:base_role_name] == base_role_type}
+      json["base_role_type_label"] = base_role[:label].call
+    end
+
+    render :json => json
   end
 
   # @API Deactivate a role
@@ -500,29 +512,49 @@ class RoleOverridesController < ApplicationController
     res
   end
 
-  # Returns a hash with the avalible permissions grouped by groups of permissions.
+  # Returns a hash with the avalible permissions grouped by groups of permissions. Permission hash looks like this
+  #
+  # ie: 
+  #   {
+  #     :group_name => "Example Name",
+  #     :group_permissions => [
+  #       {
+  #         :label => "Some Label"
+  #         :permission_name => "Some Permission Name"
+  #       }, 
+  #       {
+  #         :label => "Some Label"
+  #         :permission_name => "Some Permission Name"
+  #       }
+  #     ]
   # context - the current context
   def account_permissions(context)
+    # Add group_names
     site_admin = {:group_name => t('site_admin_permissions', "Site Admin Permissions"), :group_permissions => []}
     account = {:group_name => t('account_permissions', "Account Permissions"), :group_permissions => []}
     course = {:group_name => t('course_permissions',  "Course & Account Permissions"), :group_permissions => []}
+    admin_tools = {:group_name => t('admin_tools_permissions',  "Admin Tools"), :group_permissions => []}
  
+    # Add group_permissions
     RoleOverride.manageable_permissions(context).each do |p|
       hash = {:label => p[1][:label].call, :permission_name => p[0]}
       if p[1][:account_only]
         if p[1][:account_only] == :site_admin
           site_admin[:group_permissions] << hash
+        elsif p[1][:admin_tool]
+          admin_tools[:group_permissions] << hash
         else
           account[:group_permissions] << hash
         end
       else
         course[:group_permissions] << hash
-      end
+      end 
     end
  
     res = []
     res << site_admin if site_admin[:group_permissions].any?
     res << account if account[:group_permissions].any?
+    res << admin_tools if admin_tools[:group_permissions].any?
     res << course if course[:group_permissions].any?
  
     res.each{|pg| pg[:group_permissions] = pg[:group_permissions].sort_by{|p|p[:label]} }

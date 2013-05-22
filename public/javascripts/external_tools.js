@@ -71,7 +71,7 @@ $(document).ready(function() {
       $tool.fillTemplateData({
         data: tool,
         dataValues: ['id', 'workflow_state'],
-        hrefValues: ['id'],
+        hrefValues: ['id', 'vendor_help_link'],
         id: 'external_tool_' + tool.id
       });
 
@@ -84,6 +84,7 @@ $(document).ready(function() {
         .toggleClass('has_editor_button', tool.has_editor_button)
         .toggleClass('has_resource_selection', tool.has_resource_selection)
         .toggleClass('has_course_navigation', tool.has_course_navigation)
+        .toggleClass('has_homework_submission', tool.has_homework_submission)
         .toggleClass('has_user_navigation', tool.has_user_navigation)
         .toggleClass('has_account_navigation', tool.has_account_navigation);
 
@@ -91,6 +92,9 @@ $(document).ready(function() {
            .showIf(tool.url).end()
            .find(".tool_domain")
            .showIf(tool.domain);
+
+      $tool.find(".tool_vendor_help_link")
+          .showIf(tool.vendor_help_link);
 
       $tool.show();
     },

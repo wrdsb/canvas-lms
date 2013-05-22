@@ -99,6 +99,7 @@ namespace :canvas do
 
     puts "--> Compiling static assets [css]"
     Rake::Task['css:generate'].invoke
+    Rake::Task['css:styleguide'].invoke
 
     puts "--> Compiling static assets [jammit]"
     output = `bundle exec jammit 2>&1`
@@ -170,6 +171,7 @@ namespace :db do
   end
 
   namespace :test do
+    desc "Drop and regenerate the test db by running migrations"
     task :reset => [:environment, :load_config] do
       raise "Run with RAILS_ENV=test" unless Rails.env.test?
       config = ActiveRecord::Base.configurations['test']

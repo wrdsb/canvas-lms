@@ -3,11 +3,11 @@ define [
   'compiled/calendar/commonEventFactory'
   'jst/calendar/editAssignment'
   'jst/calendar/editAssignmentOverride'
-  'jst/calendar/genericSelect'
+  'jst/calendar/genericSelectOptions'
   'jquery.instructure_date_and_time'
   'jquery.instructure_forms'
   'jquery.instructure_misc_helpers'
-], ($, commonEventFactory, editAssignmentTemplate, editAssignmentOverrideTemplate, genericSelectTemplate) ->
+], ($, commonEventFactory, editAssignmentTemplate, editAssignmentOverrideTemplate, genericSelectOptionsTemplate) ->
 
   class EditAssignmentDetails
     constructor: (selector, @event, @contextChangeCB, @closeCB) ->
@@ -70,11 +70,9 @@ define [
         @contextChangeCB(context)
 
       # TODO: support adding a new assignment group from this select box
-      assignmentGroupsSelectInfo =
-        cssClass: 'assignment_group'
-        name: 'assignment[assignment_group_id]'
+      assignmentGroupsSelectOptionsInfo =
         collection: @currentContextInfo.assignment_groups
-      @form.find(".assignment_group_select").html(genericSelectTemplate(assignmentGroupsSelectInfo))
+      @form.find(".assignment_group").html(genericSelectOptionsTemplate(assignmentGroupsSelectOptionsInfo))
 
       # Update the edit and more options links with the new context
       @form.attr('action', @currentContextInfo.create_assignment_url)
@@ -98,7 +96,7 @@ define [
     formSubmit: (e) =>
       e.preventDefault()
       form = @form.getFormData()
-      if form['assignment[due_at]'] then @submitAssignment(form) else @submitOverride(form)
+      if form['assignment[due_at]']? then @submitAssignment(form) else @submitOverride(form)
 
     submitAssignment: (form) ->
       dueAtString = form['assignment[due_at]']

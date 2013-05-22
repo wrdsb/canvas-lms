@@ -11,8 +11,7 @@ describe "account" do
 
     it "should allow setting up a secondary ldap server" do
       get "/accounts/#{Account.default.id}/account_authorization_configs"
-      f('#add_auth_select').
-          find_element(:css, 'option[value="ldap"]').click
+      click_option('#add_auth_select', 'ldap', :value)
       ldap_div = f('#ldap_div')
       ldap_form = f('form.ldap_form')
       ldap_div.should be_displayed
@@ -109,8 +108,7 @@ describe "account" do
 
     it "should be able to set login labels for delegated auth accounts" do
       get "/accounts/#{Account.default.id}/account_authorization_configs"
-      f('#add_auth_select').
-          find_element(:css, 'option[value="cas"]').click
+      click_option('#add_auth_select', 'cas', :value)
       f("#account_authorization_config_0_login_handle_name").should be_displayed
 
       f("#account_authorization_config_0_auth_base").send_keys("cas.example.com")
@@ -290,8 +288,8 @@ describe "account" do
       @course_name = 'new course'
       @error_text = 'No Results Found'
 
-      course = Course.create!(:account => Account.default, :name => @course_name, :course_code => @course_name)
-      course.reload
+      @course = Course.create!(:account => Account.default, :name => @course_name, :course_code => @course_name)
+      @course.reload
       student_in_course(:name => @student_name)
       get "/accounts/#{Account.default.id}/courses"
     end
@@ -300,6 +298,23 @@ describe "account" do
       find_course_form = f('#new_course')
       submit_input(find_course_form, '#course_name', @course_name)
       f('#section-tabs-header').should include_text(@course_name)
+    end
+
+    it "should correctly autocomplete for courses" do
+      get "/accounts/#{Account.default.id}"
+      f('#course_name').send_keys(@course_name.chop)
+
+      keep_trying_until do
+        ui_auto_complete = f('.ui-autocomplete')
+        ui_auto_complete.should be_displayed
+      end
+
+      element = ff('.ui-autocomplete li a').first
+      element.text.should == @course_name
+      keep_trying_until do
+        driver.execute_script("$('.ui-autocomplete li a').hover().click()")
+        driver.current_url.should include("/courses/#{@course.id}")
+      end
     end
 
     it "should search for an existing user" do
@@ -321,6 +336,20 @@ describe "account" do
       find_user_form = f('#new_user')
       submit_input(find_user_form, '#user_name', 'this student name will not exist', false)
       f('#content').should include_text(@error_text)
+    end
+  end
+
+  describe "user details view" do
+    def create_sub_account(name = 'sub_account', parent_account = Account.default)
+      Account.create(:name => name, :parent_account => parent_account)
+    end
+
+    it "should be able to view user details from parent account" do
+      user_non_root = user
+      create_sub_account.add_user(user_non_root)
+      get "/accounts/#{Account.default.id}/users/#{user_non_root.id}"
+      #verify user details displayed properly
+      f('.accounts .unstyled_list li').should include_text('sub_account')
     end
   end
 end

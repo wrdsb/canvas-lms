@@ -33,11 +33,8 @@ class AccountsController < ApplicationController
     respond_to do |format|
       format.html
       format.json do
-        # TODO: what would be more useful, include sub-accounts here
-        # that you implicitly have access to, or have a separate method
-        # to get the sub-accounts of an account?
         @accounts = Api.paginate(@accounts, self, api_v1_accounts_url)
-        render :json => @accounts.map { |a| account_json(a, @current_user, session, []) }
+        render :json => @accounts.map { |a| account_json(a, @current_user, session, params[:includes] || []) }
       end
     end
   end
@@ -47,7 +44,6 @@ class AccountsController < ApplicationController
   # sis_account_id.
   def show
     return unless authorized_action(@account, @current_user, :read)
-
     respond_to do |format|
       format.html do
         return redirect_to account_settings_url(@account) if @account.site_admin? || !@account.grants_right?(@current_user, nil, :read_course_list)
@@ -56,8 +52,40 @@ class AccountsController < ApplicationController
         @courses = @account.fast_all_courses(:term => @term, :limit => @maximum_courses_im_gonna_show, :hide_enrollmentless_courses => @hide_enrollmentless_courses)
         build_course_stats
       end
-      format.json { render :json => account_json(@account, @current_user, session, []) }
+      format.json { render :json => account_json(@account, @current_user, session, params[:includes] || []) }
     end
+  end
+
+  # @API Get the sub-accounts of an account
+  #
+  # List accounts that are sub-accounts of the given account.
+  #
+  # @argument recursive [optional] If true, the entire account tree underneath
+  #   this account will be returned (though still paginated). If false, only
+  #   direct sub-accounts of this account will be returned. Defaults to false.
+  #
+  # @example_request
+  #     curl https://<canvas>/api/v1/accounts/<account_id>/sub_accounts \ 
+  #          -H 'Authorization: Bearer <token>'
+  def sub_accounts
+    return unless authorized_action(@account, @current_user, :read)
+    recursive = value_to_boolean(params[:recursive])
+    if recursive
+      @accounts = PaginatedCollection.build do |pager|
+        per_page = pager.per_page
+        current_page = pager.current_page.to_i
+        pager.replace(
+          @account.sub_accounts_recursive(per_page, current_page * per_page)
+        )
+      end
+    else
+      @accounts = @account.sub_accounts.order(:id)
+    end
+
+    @accounts = Api.paginate(@accounts, self, api_v1_sub_accounts_url,
+                             :without_count => recursive)
+
+    render :json => @accounts.map { |a| account_json(a, @current_user, session, []) }
   end
 
   include Api::V1::Course
@@ -84,7 +112,7 @@ class AccountsController < ApplicationController
       params[:state] -= %w{available}
     end
 
-    @courses = @account.associated_courses.scoped(:conditions => { :workflow_state => params[:state] })
+    @courses = @account.associated_courses.where(:workflow_state => params[:state])
     if params[:hide_enrollmentless_courses] || value_to_boolean(params[:with_enrollments])
       @courses = @courses.with_enrollments
     elsif !params[:with_enrollments].nil? && !value_to_boolean(params[:with_enrollments])
@@ -112,24 +140,61 @@ class AccountsController < ApplicationController
     render :json => @courses.map { |c| course_json(c, @current_user, session, [], nil) }
   end
 
+  # @API Update an account
+  # Update an existing account.
+  #
+  # @argument account[name] [optional] Updates the account name
+  # @argument account[default_time_zone] [Optional] The default time zone of the account. Allowed time zones are listed in {http://rubydoc.info/docs/rails/ActiveSupport/TimeZone The Ruby on Rails documentation}.
+  #
+  # @example_request
+  #   curl https://<canvas>/api/v1/accounts/<account_id> \ 
+  #     -X PUT \ 
+  #     -H 'Authorization: Bearer <token>' \ 
+  #     -d 'account[name]=New account name' \ 
+  #     -d 'account[default_time_zone]=Mountain Time (US & Canada)'
+  #
+  # @example_response
+  #   {
+  #     "id": "1",
+  #     "name": "New account name",
+  #     "default_time_zone": "Mountain Time (US & Canada)",
+  #     "parent_account_id": null,
+  #     "root_account_id": null
+  #   }
   def update
     if authorized_action(@account, @current_user, :manage_account_settings)
+      if api_request?
+        account_params = params[:account] || {}
+        account_params.reject!{|k, v| ![:name, :default_time_zone].include?(k.to_sym)}
+
+        @account.errors.add(:name, "The account name cannot be blank") if account_params.has_key?(:name) && account_params[:name].blank?
+        @account.errors.add(:default_time_zone, "'#{account_params[:default_time_zone]}' is not a recognized time zone") if account_params.has_key?(:default_time_zone) && ActiveSupport::TimeZone.new(account_params[:default_time_zone]).nil?
+        if @account.errors.empty? && @account.update_attributes(account_params)
+          render :json => account_json(@account, @current_user, session, params[:includes] || [])
+        else
+          render :json => @account.errors, :status => :bad_request
+        end
+        return
+      end
+
       respond_to do |format|
 
         custom_help_links = params[:account].delete :custom_help_links
         if custom_help_links
-          @account.settings[:custom_help_links] = custom_help_links.sort.map do |index_with_hash|
+          @account.settings[:custom_help_links] = custom_help_links.select{|k, h| h['state'] != 'deleted'}.sort.map do |index_with_hash|
             hash = index_with_hash[1]
+            hash.delete('state')
             hash.assert_valid_keys ["text", "subtext", "url", "available_to"]
             hash
           end
-        elsif @account.settings[:custom_help_links].present?
-          @account.settings.delete :custom_help_links
         end
 
         enable_user_notes = params[:account].delete :enable_user_notes
         allow_sis_import = params[:account].delete :allow_sis_import
-        params[:account].delete :default_user_storage_quota_mb unless @account.root_account? && !@account.site_admin? 
+        params[:account].delete :default_user_storage_quota_mb unless @account.root_account? && !@account.site_admin?
+        unless @account.grants_right? @current_user, :manage_storage_quotas
+          [:storage_quota, :default_storage_quota, :default_storage_quota_mb, :default_user_storage_quota_mb].each { |key| params[:account].delete key }
+        end
         if params[:account][:services]
           params[:account][:services].slice(*Account.services_exposed_to_ui_hash.keys).each do |key, value|
             @account.set_service_availability(key, value == '1')
@@ -153,6 +218,7 @@ class AccountsController < ApplicationController
         else
           # must have :manage_site_settings to update these
           [ :admins_can_change_passwords,
+            :admins_can_view_notifications,
             :enable_alerts,
             :enable_eportfolios,
             :enable_profiles,
@@ -163,6 +229,7 @@ class AccountsController < ApplicationController
             params[:account][:settings].try(:delete, key)
           end
         end
+
         if sis_id = params[:account].delete(:sis_source_id)
           if !@account.root_account? && sis_id != @account.sis_source_id && @account.root_account.grants_right?(@current_user, session, :manage_sis)
             if sis_id == ''
@@ -172,6 +239,12 @@ class AccountsController < ApplicationController
             end
           end
         end
+
+        can_edit_email = params[:account][:settings].try(:delete, :edit_institution_email)
+        if @account.root_account? && !can_edit_email.nil?
+          @account[:settings][:edit_institution_email] = value_to_boolean(can_edit_email)
+        end
+
         if @account.update_attributes(params[:account])
           format.html { redirect_to account_settings_url(@account) }
           format.json { render :json => @account.to_json }
@@ -206,6 +279,24 @@ class AccountsController < ApplicationController
       @alerts = @account.alerts
       @role_types = RoleOverride.account_membership_types(@account)
     end
+  end
+
+  # Admin Tools page controls 
+  # => Log Auditing
+  # => Add/Change Quota
+  # = Restoring Content
+  def admin_tools
+    if !@account.can_see_admin_tools_tab?(@current_user)
+      return render_unauthorized_action(@account)
+    end
+
+    js_env :ACCOUNT_ID => @account.id
+    js_env :PERMISSIONS => {:restore_course => @account.grants_right?(@current_user, session, :undelete_courses),
+                            # Permission caching issue makes explicitly checking the account setting
+                            # an easier option.
+                            :view_messages => (@account.settings[:admins_can_view_notifications] &&
+                                @account.grants_right?(@current_user, session, :view_notifications)) ||
+                                Account.site_admin.grants_right?(@current_user, :read_messages)}
   end
 
   def confirm_delete_user
@@ -335,7 +426,7 @@ class AccountsController < ApplicationController
     if authorized_action(@account, @current_user, :manage_sis)
       return redirect_to account_settings_url(@account) if !@account.allow_sis_import || !@account.root_account?
       @current_batch = @account.current_sis_batch
-      @last_batch = @account.sis_batches.scoped(:order=>'created_at DESC', :limit=>1).first
+      @last_batch = @account.sis_batches.order('created_at DESC').first
       @terms = @account.enrollment_terms.active
       respond_to do |format|
         format.html
@@ -372,7 +463,7 @@ class AccountsController < ApplicationController
   
   def build_course_stats
     teachers = TeacherEnrollment.for_courses_with_user_name(@courses).admin.active
-    course_to_student_counts = StudentEnrollment.student_in_claimed_or_available.scoped(:conditions => { :course_id => @courses.map(&:id) }).count('DISTINCT user_id', :group => :course_id)
+    course_to_student_counts = StudentEnrollment.student_in_claimed_or_available.where(:course_id => @courses).group(:course_id).count(:user_id, :distinct => true)
     courses_to_teachers = teachers.inject({}) do |result, teacher|
       result[teacher.course_id] ||= []
       result[teacher.course_id] << teacher

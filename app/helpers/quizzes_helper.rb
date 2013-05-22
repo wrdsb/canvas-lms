@@ -17,6 +17,25 @@
 #
 
 module QuizzesHelper
+  def needs_unpublished_warning?(quiz=@quiz)
+    !quiz.available? || quiz.unpublished_changes?
+  end
+
+  def unpublished_quiz_warning
+    I18n.t("#quizzes.warnings.unpublished_quiz",
+      '*This quiz is unpublished* Only teachers can see the quiz until ' +
+      'it is published.',
+      :wrapper => '<strong class=unpublished_quiz_warning>\1</strong>')
+  end
+
+  def unpublished_changes_warning
+    I18n.t("#quizzes.warnings.unpublished_changes",
+      '*You have made unpublished changes to this quiz.* '+
+      'These changes will not appear for students until you publish or ' +
+      'republish the quiz.',
+      :wrapper => '<strong class=unpublished_quiz_warning>\1</strong>')
+  end
+
   def render_score(score, precision=2)
     if score.nil?
       '_'
@@ -25,13 +44,110 @@ module QuizzesHelper
     end
   end
 
+  def render_quiz_type(quiz_type)
+    case quiz_type
+    when "practice_quiz"
+      I18n.t('#quizzes.practice_quiz', "Practice Quiz")
+    when "assignment"
+      I18n.t('#quizzes.graded_quiz', "Graded Quiz")
+    when "graded_survey"
+      I18n.t('#quizzes.graded_survey', "Graded Survey")
+    when "survey"
+      I18n.t('#quizzes.ungraded_survey', "Ungraded Survey")
+    end
+  end
+
+  def render_score_to_keep(quiz_scoring_policy)
+    case quiz_scoring_policy
+    when "keep_highest"
+      I18n.t('#quizzes.keep_highest', 'Highest')
+    when "keep_latest"
+      I18n.t('#quizzes.keep_latest', 'Latest')
+    end
+  end
+
+  def render_show_responses(quiz_hide_results)
+    # "Let Students See Their Quiz Responses?"
+    case quiz_hide_results
+    when "always"
+      I18n.t('#options.no', "No")
+    when "until_after_last_attempt"
+      I18n.t('#quizzes.after_last_attempt', "After Last Attempt")
+    when nil
+      I18n.t('#quizzes.always', "Always")
+    end
+  end
+
+  def submitted_students_title(quiz, students)
+    if quiz.survey?
+      submitted_students_survey_title(students.length)
+    else
+      submitted_students_quiz_title(students.length)
+    end
+  end
+
+  def submitted_students_quiz_title(student_count)
+    I18n.t('#quizzes.headers.submitted_students_quiz_title',
+      { :zero => "Students who have taken the quiz",
+        :one => "Students who have taken the quiz (%{count})",
+        :other => "Students who have taken the quiz (%{count})" },
+      { :count => student_count })
+  end
+
+  def submitted_students_survey_title(student_count)
+    I18n.t('#quizzes.headers.submitted_students_survey_title',
+      { :zero => "Students who have taken the survey",
+        :one => "Students who have taken the survey (%{count})",
+        :other => "Students who have taken the survey (%{count})" },
+      { :count => student_count })
+  end
+
+  def no_submitted_students_msg(quiz)
+    if quiz.survey?
+      t('#quizzes.messages.no_submitted_students_survey', "No Students have taken the survey yet")
+    else
+      t('#quizzes.messages.no_submitted_students_quiz', "No Students have taken the quiz yet")
+    end
+  end
+
+  def unsubmitted_students_title(quiz, students)
+    if quiz.survey?
+      unsubmitted_students_survey_title(students.length)
+    else
+      unsubmitted_students_quiz_title(students.length)
+    end
+  end
+
+  def unsubmitted_students_quiz_title(student_count)
+    I18n.t('#quizzes.headers.unsubmitted_students_quiz_title',
+      { :zero => "Student who haven't taken the quiz",
+        :one => "Students who haven't taken the quiz (%{count})",
+        :other => "Students who haven't taken the quiz (%{count})" },
+      { :count => student_count })
+  end
+
+  def unsubmitted_students_survey_title(student_count)
+    I18n.t('#quizzes.headers.unsubmitted_students_survey_title',
+      { :zero => "Student who haven't taken the survey",
+        :one => "Students who haven't taken the survey (%{count})",
+        :other => "Students who haven't taken the survey (%{count})" },
+      { :count => student_count })
+  end
+
+  def no_unsubmitted_students_msg(quiz)
+    if quiz.survey?
+      t('#quizzes.messages.no_unsubmitted_students_survey', "All Students have taken the survey")
+    else
+      t('#quizzes.messages.no_unsubmitted_students_quiz', "All Students have taken the quiz")
+    end
+  end
+
   QuestionType = Struct.new(:question_type,
-                          :entry_type,
-                          :display_answers,
-                          :answer_type,
-                          :multiple_sets,
-                          :unsupported
-                         )
+                            :entry_type,
+                            :display_answers,
+                            :answer_type,
+                            :multiple_sets,
+                            :unsupported)
 
   def answer_type(question)
     return QuestionType.new unless question
@@ -65,6 +181,14 @@ module QuizzesHelper
         "textarea",
         "single",
         "text_answer",
+        false,
+        false
+      ),
+      "file_upload_question" => QuestionType.new(
+        "file_upload_question",
+        "file",
+        "single",
+        "file_answer",
         false,
         false
       ),
@@ -178,10 +302,10 @@ module QuizzesHelper
     if answer_list && !answer_list.empty?
       index  = 0
       res.gsub %r{<input.*?name=['"](question_.*?)['"].*?/>} do |match|
-        a = answer_list[index]
+        a = h(answer_list[index])
         index += 1
         #  Replace the {{question_BLAH}} template text with the user's answer text.
-        match.sub(/\{\{question_.*?\}\}/, a.to_s).
+        match.sub(/\{\{question_.*?\}\}/, a).
           # Match on "/>" but only when at the end of the string and insert "readonly" if set to be readonly
           sub(/\/\>\Z/, readonly_markup)
       end
@@ -236,7 +360,7 @@ module QuizzesHelper
         :score => score_html,
         :points_possible => render_score(points_possible, options[:precision]))
   end
-  
+
   def link_to_take_quiz(link_body, opts={})
     opts = opts.with_indifferent_access
     class_array = (opts['class'] || "").split(" ")

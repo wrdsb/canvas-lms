@@ -270,23 +270,6 @@ describe UsersController do
         json["errors"]["user"]["terms_of_use"].should be_present
       end
 
-      it "should validate the birthdate if a student" do
-        post 'create', :pseudonym => { :unique_id => 'jacob@instructure.com' }, :user => { :name => 'Jacob Fugal', :terms_of_use => '1', :initial_enrollment_type => 'student' }
-        response.status.should =~ /400 Bad Request/
-        json = JSON.parse(response.body)
-        json["errors"]["user"]["birthdate"].should be_present
-
-        post 'create', :pseudonym => { :unique_id => 'jacob@instructure.com' }, :user => { :name => 'Jacob Fugal', :terms_of_use => '1', :birthdate => 2.years.ago.strftime('%Y-%m-%d'), :initial_enrollment_type => 'student' }
-        response.status.should =~ /400 Bad Request/
-        json = JSON.parse(response.body)
-        json["errors"]["user"]["birthdate"].should be_present
-
-        post 'create', :pseudonym => { :unique_id => 'jacob@instructure.com' }, :user => { :name => 'Jacob Fugal', :terms_of_use => '1', :birthdate => 20.years.ago.strftime('%Y-%m-%d'), :initial_enrollment_type => 'student' }
-        u = User.find_by_name 'Jacob Fugal'
-        u.should be_pre_registered
-        response.should be_success
-      end
-
       it "should require email pseudonyms by default" do
         post 'create', :pseudonym => { :unique_id => 'jacob' }, :user => { :name => 'Jacob Fugal', :terms_of_use => '1' }
         response.status.should =~ /400 Bad Request/
@@ -302,14 +285,14 @@ describe UsersController do
       end
 
       it "should validate the self enrollment code" do
-        post 'create', :pseudonym => { :unique_id => 'jacob@instructure.com', :password => 'asdfasdf', :password_confirmation => 'asdfasdf' }, :user => { :name => 'Jacob Fugal', :terms_of_use => '1', :birthdate => 20.years.ago.strftime('%Y-%m-%d'), :self_enrollment_code => 'omg ... not valid', :initial_enrollment_type => 'student' }, :self_enrollment => '1'
+        post 'create', :pseudonym => { :unique_id => 'jacob@instructure.com', :password => 'asdfasdf', :password_confirmation => 'asdfasdf' }, :user => { :name => 'Jacob Fugal', :terms_of_use => '1', :self_enrollment_code => 'omg ... not valid', :initial_enrollment_type => 'student' }, :self_enrollment => '1'
         response.status.should =~ /400 Bad Request/
         json = JSON.parse(response.body)
         json["errors"]["user"]["self_enrollment_code"].should be_present
       end
 
       it "should ignore the password if not self enrolling" do
-        post 'create', :pseudonym => { :unique_id => 'jacob@instructure.com', :password => 'asdfasdf', :password_confirmation => 'asdfasdf' }, :user => { :name => 'Jacob Fugal', :terms_of_use => '1', :birthdate => 20.years.ago.strftime('%Y-%m-%d'), :initial_enrollment_type => 'student' }
+        post 'create', :pseudonym => { :unique_id => 'jacob@instructure.com', :password => 'asdfasdf', :password_confirmation => 'asdfasdf' }, :user => { :name => 'Jacob Fugal', :terms_of_use => '1', :initial_enrollment_type => 'student' }
         response.should be_success
         u = User.find_by_name 'Jacob Fugal'
         u.should be_pre_registered
@@ -320,7 +303,7 @@ describe UsersController do
         course(:active_all => true)
         @course.update_attribute(:self_enrollment, true)
 
-        post 'create', :pseudonym => { :unique_id => 'jacob@instructure.com', :password => 'asdfasdf', :password_confirmation => 'asdfasdf' }, :user => { :name => 'Jacob Fugal', :terms_of_use => '1', :birthdate => 20.years.ago.strftime('%Y-%m-%d'), :self_enrollment_code => @course.self_enrollment_code, :initial_enrollment_type => 'student' }, :pseudonym_type => 'email', :self_enrollment => '1'
+        post 'create', :pseudonym => { :unique_id => 'jacob@instructure.com', :password => 'asdfasdf', :password_confirmation => 'asdfasdf' }, :user => { :name => 'Jacob Fugal', :terms_of_use => '1', :self_enrollment_code => @course.self_enrollment_code, :initial_enrollment_type => 'student' }, :pseudonym_type => 'email', :self_enrollment => '1'
         response.should be_success
         u = User.find_by_name 'Jacob Fugal'
         u.should be_pre_registered
@@ -331,7 +314,7 @@ describe UsersController do
         course(:active_all => true)
         @course.update_attribute(:self_enrollment, true)
 
-        post 'create', :pseudonym => { :unique_id => 'jacob' }, :user => { :name => 'Jacob Fugal', :terms_of_use => '1', :birthdate => 20.years.ago.strftime('%Y-%m-%d'), :self_enrollment_code => @course.self_enrollment_code, :initial_enrollment_type => 'student' }, :pseudonym_type => 'username', :self_enrollment => '1'
+        post 'create', :pseudonym => { :unique_id => 'jacob' }, :user => { :name => 'Jacob Fugal', :terms_of_use => '1', :self_enrollment_code => @course.self_enrollment_code, :initial_enrollment_type => 'student' }, :pseudonym_type => 'username', :self_enrollment => '1'
         response.status.should =~ /400 Bad Request/
         json = JSON.parse(response.body)
         json["errors"]["pseudonym"]["password"].should be_present
@@ -342,7 +325,7 @@ describe UsersController do
         course(:active_all => true)
         @course.update_attribute(:self_enrollment, true)
 
-        post 'create', :pseudonym => { :unique_id => 'jacob', :password => 'asdfasdf', :password_confirmation => 'asdfasdf' }, :user => { :name => 'Jacob Fugal', :terms_of_use => '1', :birthdate => 20.years.ago.strftime('%Y-%m-%d'), :self_enrollment_code => @course.self_enrollment_code, :initial_enrollment_type => 'student' }, :pseudonym_type => 'username', :self_enrollment => '1'
+        post 'create', :pseudonym => { :unique_id => 'jacob', :password => 'asdfasdf', :password_confirmation => 'asdfasdf' }, :user => { :name => 'Jacob Fugal', :terms_of_use => '1', :self_enrollment_code => @course.self_enrollment_code, :initial_enrollment_type => 'student' }, :pseudonym_type => 'username', :self_enrollment => '1'
         response.should be_success
         u = User.find_by_name 'Jacob Fugal'
         @course.students.should include(u)
@@ -403,7 +386,7 @@ describe UsersController do
         end
 
 
-        it "should not require acceptance of the terms or birthdate" do
+        it "should not require acceptance of the terms" do
           post 'create', :account_id => account.id, :pseudonym => { :unique_id => 'jacob@instructure.com' }, :user => { :name => 'Jacob Fugal' }
           response.should be_success
         end
@@ -445,7 +428,7 @@ describe UsersController do
         post 'create', :format => 'json', :account_id => account.id, :pseudonym => { :unique_id => 'jacob@instructure.com', :send_confirmation => '0' }, :user => { :name => 'Jacob Fugal' }
         response.should be_success
         p = Pseudonym.find_by_unique_id('jacob@instructure.com')
-        Message.find(:first, :conditions => { :communication_channel_id => p.user.email_channel.id, :notification_id => notification.id }).should_not be_nil
+        Message.where(:communication_channel_id => p.user.email_channel, :notification_id => notification).first.should_not be_nil
       end
 
       it "should not notify the user if the merge opportunity can't log in'" do
@@ -462,12 +445,13 @@ describe UsersController do
         post 'create', :format => 'json', :account_id => account.id, :pseudonym => { :unique_id => 'jacob@instructure.com', :send_confirmation => '0' }, :user => { :name => 'Jacob Fugal' }
         response.should be_success
         p = Pseudonym.find_by_unique_id('jacob@instructure.com')
-        Message.find(:first, :conditions => { :communication_channel_id => p.user.email_channel.id, :notification_id => notification.id }).should be_nil
+        Message.where(:communication_channel_id => p.user.email_channel, :notification_id => notification).first.should be_nil
       end
     end
   end
 
   context "GET 'grades'" do
+
     it "should not include designers in the teacher enrollments" do
       # teacher needs to be in two courses to get to the point where teacher
       # enrollments are queried
@@ -483,8 +467,9 @@ describe UsersController do
       get 'grades', :course_id => @course.id
       response.should be_success
 
-      assigns[:teacher_enrollments].should_not be_nil
-      teachers = assigns[:teacher_enrollments].map{ |e| e.user }
+      teacher_enrollments = assigns[:presenter].teacher_enrollments
+      teacher_enrollments.should_not be_nil
+      teachers = teacher_enrollments.map{ |e| e.user }
       teachers.should be_include(@teacher)
       teachers.should_not be_include(@designer)
     end
@@ -514,10 +499,30 @@ describe UsersController do
       run_transaction_commit_callbacks
 
       get 'grades'
-      assigns[:course_grade_summaries][@course.id].should == { :score => 70, :students => 2 }
+      assigns[:presenter].course_grade_summaries[@course.id].should == { :score => 70, :students => 2 }
+    end
+
+    context 'across shards' do
+      specs_require_sharding
+
+      it 'loads courses from all shards' do
+        course_with_teacher_logged_in :active_all => true
+        @shard1.activate do
+          account = Account.create!
+          course = account.courses.create!
+          @e2 = course.enroll_teacher(@teacher)
+          @e2.update_attribute(:workflow_state, 'active')
+        end
+
+        get 'grades'
+        response.should be_success
+        enrollments = assigns[:presenter].teacher_enrollments
+        enrollments.should include(@e2)
+      end
+
     end
   end
-  
+
   describe "GET 'avatar_image'" do
     it "should redirect to no-pic if avatars are disabled" do
       course_with_student_logged_in(:active_all => true)
@@ -664,7 +669,7 @@ describe UsersController do
 
   describe "GET 'show'" do
     context "sharding" do
-      it_should_behave_like "sharding"
+      specs_require_sharding
 
       it "should include enrollments from all shards" do
         course_with_teacher(:active_all => 1)
@@ -680,6 +685,18 @@ describe UsersController do
         response.should be_success
         assigns[:enrollments].sort_by(&:id).should == [@enrollment, @e2]
       end
+    end
+
+    it "should respond to JSON request" do
+      account = Account.create!
+      course_with_student(:active_all => true, :account => account)
+      account_admin_user(:account => account)
+      user_with_pseudonym(:user => @admin, :account => account)
+      user_session(@admin)
+      get 'show', :id  => @student.id, :format => 'json'
+      response.should be_success
+      user = json_parse
+      user['name'].should == @student.name
     end
   end
 end

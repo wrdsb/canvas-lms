@@ -85,7 +85,7 @@ class UsersController < ApplicationController
   include LinkedIn
   include DeliciousDiigo
   include SearchHelper
-  before_filter :require_user, :only => [:grades, :merge, :kaltura_session, :ignore_item, :ignore_stream_item, :close_notification, :mark_avatar_image, :user_dashboard, :toggle_dashboard, :masquerade, :external_tool]
+  before_filter :require_user, :only => [:grades, :merge, :kaltura_session, :ignore_item, :ignore_stream_item, :close_notification, :mark_avatar_image, :user_dashboard, :toggle_dashboard, :masquerade, :external_tool, :dashboard_sidebar]
   before_filter :require_registered_user, :only => [:delete_user_service, :create_user_service]
   before_filter :reject_student_view_student, :only => [:delete_user_service, :create_user_service, :merge, :user_dashboard, :masquerade]
   before_filter :require_self_registration, :only => [:new, :create]
@@ -94,48 +94,16 @@ class UsersController < ApplicationController
     @user = User.find_by_id(params[:user_id]) if params[:user_id].present?
     @user ||= @current_user
     if authorized_action(@user, @current_user, :read)
-      @current_active_enrollments = @user.current_enrollments.scoped(:include => :course)
-      @prior_enrollments = []; @current_enrollments = []
-      @current_active_enrollments.each do |e|
-        case e.state_based_on_date
-        when :active
-          @current_enrollments << e
-        when :completed
-          #@prior_enrollments << e
-        end
-      end
-      #@prior_enrollments.concat @user.concluded_enrollments.select{|e| e.is_a?(StudentEnrollment) }
+      current_active_enrollments = @user.current_enrollments.with_each_shard { |scope| scope.includes(:course) }
 
-      @student_enrollments = @current_enrollments.
-        select{ |e| e.student? }.
-        inject({}){ |hash, e| hash[e.course] = e; hash }
+      @presenter = GradesPresenter.new(current_active_enrollments)
 
-      @observer_enrollments = @current_enrollments.select{|e| e.is_a?(ObserverEnrollment) && e.associated_user_id }
-      @observed_enrollments = []
-      @observer_enrollments.each do |e|
-        @observed_enrollments << StudentEnrollment.active.find_by_user_id_and_course_id(e.associated_user_id, e.course_id)
-      end
-      @observed_enrollments = @observed_enrollments.uniq.compact
-
-      @teacher_enrollments = @current_enrollments.select{|e| e.instructor? }
-
-      if @student_enrollments.length + @teacher_enrollments.length + @observed_enrollments.length == 1# && @prior_enrollments.empty?
-        enrollment = @student_enrollments.first.try(:last) || @teacher_enrollments.first || @observed_enrollments.first
-        redirect_to course_grades_url(enrollment.course_id)
+      if @presenter.has_single_enrollment?
+        redirect_to course_grades_url(@presenter.single_enrollment.course_id)
         return
       end
 
       Enrollment.send(:preload_associations, @observed_enrollments, :course)
-      #Enrollment.send(:preload_associations, @prior_enrollments, :course)
-
-      @course_grade_summaries = {}
-      @teacher_enrollments.each do |enrollment|
-        @course_grade_summaries[enrollment.course_id] = Rails.cache.fetch(['computed_avg_grade_for', enrollment.course].cache_key) do
-          current_scores = enrollment.course.student_enrollments.not_fake.maximum(:computed_current_score, :group => :user_id).values.compact
-          score = (current_scores.sum.to_f * 100.0 / current_scores.length.to_f).round.to_f / 100.0 rescue nil
-          {:score => score, :students => current_scores.length }
-        end
-      end
     end
   end
 
@@ -223,15 +191,14 @@ class UsersController < ApplicationController
     if authorized_action(@context, @current_user, :read_roster)
       @root_account = @context.root_account
       @query = (params[:user] && params[:user][:name]) || params[:term]
-      ActiveRecord::Base::ConnectionSpecification.with_environment(:slave) do
+      Shackles.activate(:slave) do
         if @context && @context.is_a?(Account) && @query
           @users = @context.users_name_like(@query)
         elsif params[:enrollment_term_id].present? && @root_account == @context
-          @users = @context.fast_all_users.scoped({
-            :joins => :courses,
-            :conditions => ["courses.enrollment_term_id = ?", params[:enrollment_term_id]],
-            :group => @context.connection.group_by('users.id', 'users.name', 'users.sortable_name')
-          })
+          # fast_all_users already specifies a select for the distinct to work on
+          @users = @context.fast_all_users.joins(:courses).
+              where(:courses => { :enrollment_term_id => params[:enrollment_term_id] })
+          @users = @users.uniq
         elsif !api_request?
           @users = @context.fast_all_users
         end
@@ -272,7 +239,7 @@ class UsersController < ApplicationController
 
   before_filter :require_password_session, :only => [:masquerade]
   def masquerade
-    @user = User.find(:first, :conditions => {:id => params[:user_id]})
+    @user = User.find_by_id(params[:user_id])
     return render_unauthorized_action(@user) unless @user.can_masquerade?(@real_current_user || @current_user, @domain_root_account)
     if request.post?
       if @user == @real_current_user
@@ -290,7 +257,7 @@ class UsersController < ApplicationController
     check_incomplete_registration
     get_context
 
-    # dont show crubms on dashboard because it does not make sense to have a breadcrumb
+    # dont show crumbs on dashboard because it does not make sense to have a breadcrumb
     # trail back to home if you are already home
     clear_crumbs
 
@@ -298,13 +265,20 @@ class UsersController < ApplicationController
       return redirect_to(dashboard_url, :status => :moved_permanently)
     end
     disable_page_views if @current_pseudonym && @current_pseudonym.unique_id == "pingdom@instructure.com"
-    if @show_recent_feedback = (@current_user.student_enrollments.active.size > 0)
-      @recent_feedback = (@current_user && @current_user.recent_feedback) || []
-    end
+
+    js_env :DASHBOARD_SIDEBAR_URL => dashboard_sidebar_url
 
     @announcements = AccountNotification.for_user_and_account(@current_user, @domain_root_account)
     @pending_invitations = @current_user.cached_current_enrollments(:include_enrollment_uuid => session[:enrollment_uuid]).select { |e| e.invited? }
     @stream_items = @current_user.try(:cached_recent_stream_items) || []
+  end
+
+  def dashboard_sidebar
+    if @show_recent_feedback = (@current_user.student_enrollments.active.size > 0)
+      @recent_feedback = (@current_user && @current_user.recent_feedback) || []
+    end
+
+    render :layout => false
   end
 
   def toggle_dashboard
@@ -527,7 +501,8 @@ class UsersController < ApplicationController
     unless %w[grading submitting].include?(params[:purpose])
       return render(:json => { :ignored => false }, :status => 400)
     end
-    @current_user.ignore_item!(params[:asset_string], params[:purpose], params[:permanent] == '1')
+    @current_user.ignore_item!(ActiveRecord::Base.find_by_asset_string(params[:asset_string], ['Assignment']),
+                               params[:purpose], params[:permanent] == '1')
     render :json => { :ignored => true }
   end
 
@@ -619,14 +594,17 @@ class UsersController < ApplicationController
       # course_section and enrollment term will only be used if the enrollment dates haven't been cached yet;
       # maybe should just look at the first enrollment and check if it's cached to decide if we should include
       # them here
-      @enrollments = @user.enrollments.with_each_shard { |scope| scope.scoped(:conditions => "enrollments.workflow_state<>'deleted' AND courses.workflow_state<>'deleted'", :include => [{:course => { :enrollment_term => :enrollment_dates_overrides }}, :associated_user, :course_section]) }
+      @enrollments = @user.enrollments.with_each_shard { |scope| scope.where("enrollments.workflow_state<>'deleted' AND courses.workflow_state<>'deleted'").includes({:course => { :enrollment_term => :enrollment_dates_overrides }}, :associated_user, :course_section) }
       @enrollments = @enrollments.sort_by {|e| [e.state_sortable, e.rank_sortable, e.course.name] }
       # pre-populate the reverse association
       @enrollments.each { |e| e.user = @user }
-      @group_memberships = @user.current_group_memberships.scoped(:include => :group)
+      @group_memberships = @user.current_group_memberships.includes(:group)
 
       respond_to do |format|
         format.html
+        format.json {
+          render :json => user_json(@user, @current_user, session, %w{locale avatar_url},
+                                    @current_user.pseudonym.account) }
       end
     end
   end
@@ -636,10 +614,9 @@ class UsersController < ApplicationController
     @resource_title = @tool.label_for(:user_navigation)
     @resource_url = @tool.settings[:user_navigation][:url]
     @opaque_id = @current_user.opaque_identifier(:asset_string)
-    @context = @current_user.profile
     @resource_type = 'user_navigation'
     @return_url = user_profile_url(@current_user, :include_host => true)
-    @launch = BasicLTI::ToolLaunch.new(:url => @resource_url, :tool => @tool, :user => @current_user, :context => @context, :link_code => @opaque_id, :return_url => @return_url, :resource_type => @resource_type)
+    @launch = BasicLTI::ToolLaunch.new(:url => @resource_url, :tool => @tool, :user => @current_user, :context => @domain_root_account, :link_code => @opaque_id, :return_url => @return_url, :resource_type => @resource_type)
     @tool_settings = @launch.generate
     @active_tab = @tool.asset_string
     add_crumb(@current_user.short_name, user_profile_path(@current_user))
@@ -648,6 +625,9 @@ class UsersController < ApplicationController
 
   def new
     return redirect_to(root_url) if @current_user
+    js_env :HIDDEN_FIELDS => @domain_root_account.tracking_fields(params),
+           :USER => {:LOGIN_HANDLE_NAME => @domain_root_account.login_handle_name},
+           :PASSWORD_POLICY => @domain_root_account.password_policy
     render :layout => 'bare'
   end
 
@@ -712,8 +692,6 @@ class UsersController < ApplicationController
       @user.require_presence_of_name = true
       @user.require_self_enrollment_code = self_enrollment
       @user.validation_root_account = @domain_root_account
-      # min age may also be enforced, depending on require_self_enrollment_code
-      @user.require_birthdate = (@user.initial_enrollment_type == 'student')
     end
     
     @observee = nil
@@ -899,32 +877,10 @@ class UsersController < ApplicationController
   end
 
   def media_download
-    url = Rails.cache.fetch(['media_download_url', params[:entryId], params[:type]].cache_key, :expires_in => 30.minutes) do
-      client = Kaltura::ClientV3.new
-      client.startSession(Kaltura::SessionType::ADMIN)
-      assets = client.flavorAssetGetByEntryId(params[:entryId])
-      asset = assets.find {|a| a[:fileExt] == params[:type] }
-      if asset
-        client.flavorAssetGetDownloadUrl(asset[:id])
-      else
-        nil
-      end
-    end
-
+    asset = Kaltura::ClientV3.new.media_sources(params[:entryId]).find{|a| a[:fileExt] == params[:type] }
+    url = asset && asset[:url]
     if url
       if params[:redirect] == '1'
-        if %w(mp3 mp4).include?(params[:type])
-          # hack alert -- iTunes (and maybe others who follow the same podcast
-          # spec) requires that the download URL for podcast items end in .mp3
-          # or another supported media type. Normally, the Kaltura download URL
-          # doesn't end in .mp3. But Kaltura's first download URL redirects to
-          # the same download url with /relocate/filename.ext appended, so we're
-          # just going to explicitly append that to skip the first redirect, so
-          # that iTunes will download the podcast items. This doesn't appear to
-          # be documented anywhere though, so we're talking with Kaltura about
-          # a more official solution.
-          url = "#{url}/relocate/download.#{params[:type]}"
-        end
         redirect_to url
       else
         render :json => { 'url' => url }
@@ -948,7 +904,7 @@ class UsersController < ApplicationController
     end
 
     if @user_about_to_go_away && @user_that_will_still_be_around
-      @user_about_to_go_away.move_to_user(@user_that_will_still_be_around)
+      UserMerge.from(@user_about_to_go_away).into(@user_that_will_still_be_around)
       @user_that_will_still_be_around.touch
       flash[:notice] = t('user_merge_success', "User merge succeeded! %{first_user} and %{second_user} are now one and the same.", :first_user => @user_that_will_still_be_around.name, :second_user => @user_about_to_go_away.name)
     else
@@ -1150,12 +1106,12 @@ class UsersController < ApplicationController
 
   def teacher_activity
     @teacher = User.find(params[:user_id])
-    if @teacher == @current_user || authorized_action(@teacher, @current_user, :view_statistics)
+    if @teacher == @current_user || authorized_action(@teacher, @current_user, :read_reports)
       @courses = {}
 
       if params[:student_id]
         student = User.find(params[:student_id])
-        enrollments = student.student_enrollments.active.all(:include => :course)
+        enrollments = student.student_enrollments.active.includes(:course).all
         enrollments.each do |enrollment|
           should_include = enrollment.course.user_has_been_instructor?(@teacher) && 
                            enrollment.course.enrollments_visible_to(@teacher, :include_priors => true).find_by_id(enrollment.id) &&
@@ -1262,7 +1218,7 @@ class UsersController < ApplicationController
   def unfollow
     @user = api_find(User, params[:user_id])
     if authorized_action(@user, @current_user, :follow)
-      user_follow = @current_user.user_follows.find(:first, :conditions => { :followed_item_id => @user.id, :followed_item_type => 'User' })
+      user_follow = @current_user.user_follows.where(:followed_item_id => @user, :followed_item_type => 'User').first
       user_follow.try(:destroy)
       render :json => { "ok" => true }
     end
@@ -1276,28 +1232,31 @@ class UsersController < ApplicationController
     student_enrollments.each { |e| data[e.user.id] = { :enrollment => e, :ungraded => [] } }
 
     # find last interactions
-    last_comment_dates = SubmissionComment.for_context(course).maximum(
-      :created_at,
-      :group => 'recipient_id',
-      :conditions => ["author_id = ? AND recipient_id IN (?)", teacher.id, ids])
+    last_comment_dates = SubmissionComment.for_context(course).
+        group(:recipient_id).
+        where("author_id = ? AND recipient_id IN (?)", teacher, ids).
+        maximum(:created_at)
     last_comment_dates.each do |user_id, date|
       next unless student = data[user_id]
       student[:last_interaction] = [student[:last_interaction], date].compact.max
     end
-    last_message_dates = ConversationMessage.maximum(
-      :created_at,
-      :joins => 'INNER JOIN conversation_participants ON conversation_participants.conversation_id=conversation_messages.conversation_id',
-      :group => ['conversation_participants.user_id', 'conversation_messages.author_id'],
-      :conditions => [ 'conversation_messages.author_id = ? AND conversation_participants.user_id IN (?) AND NOT conversation_messages.generated', teacher.id, ids ])
+    scope = ConversationMessage.
+        joins('INNER JOIN conversation_participants ON conversation_participants.conversation_id=conversation_messages.conversation_id').
+        where('conversation_messages.author_id = ? AND conversation_participants.user_id IN (?) AND NOT conversation_messages.generated', teacher, ids)
+    # fake_arel can't pass an array in the group by through the scope
+    last_message_dates = Rails.version < '3.0' ?
+        scope.maximum(:created_at, :group => ['conversation_participants.user_id', 'conversation_messages.author_id']) :
+        scope.group(['conversation_participants.user_id', 'conversation_messages.author_id']).maximum(:created_at)
     last_message_dates.each do |key, date|
       next unless student = data[key.first.to_i]
       student[:last_interaction] = [student[:last_interaction], date].compact.max
     end
 
     # find all ungraded submissions in one query
-    ungraded_submissions = course.submissions.all(
-      :include => :assignment,
-      :conditions => ["user_id IN (?) AND #{Submission.needs_grading_conditions}", ids])
+    ungraded_submissions = course.submissions.
+        includes(:assignment).
+        where("user_id IN (?) AND #{Submission.needs_grading_conditions}", ids).
+        all
     ungraded_submissions.each do |submission|
       next unless student = data[submission.user_id]
       student[:ungraded] << submission
@@ -1306,10 +1265,10 @@ class UsersController < ApplicationController
     if course.root_account.enable_user_notes?
       data.each { |k,v| v[:last_user_note] = nil }
       # find all last user note times in one query
-      note_dates = UserNote.active.maximum(
-        :created_at,
-        :group => 'user_id',
-        :conditions => ["created_by_id = ? AND user_id IN (?)", teacher.id, ids])
+      note_dates = UserNote.active.
+          group(:user_id).
+          where("created_by_id = ? AND user_id IN (?)", teacher, ids).
+          maximum(:created_at)
       note_dates.each do |user_id, date|
         next unless student = data[user_id]
         student[:last_user_note] = date

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 - 2012 Instructure, Inc.
+# Copyright (C) 2011 - 2013 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -86,17 +86,20 @@
 #
 #       // The ID of the group's category.
 #       group_category_id: 4,
+#
+#       // the storage quota for the group, in megabytes
+#       storage_quota_mb: 50
 #     }
 #
 class GroupsController < ApplicationController
   before_filter :get_context
-  before_filter :require_context, :only => [:create_category, :delete_category]
+  before_filter :require_user, :only => %w[index]
 
   include Api::V1::Attachment
   include Api::V1::Group
   include Api::V1::UserFollow
 
-  SETTABLE_GROUP_ATTRIBUTES = %w(name description join_level is_public group_category avatar_attachment)
+  SETTABLE_GROUP_ATTRIBUTES = %w(name description join_level is_public group_category avatar_attachment storage_quota_mb)
 
   include TextHelper
 
@@ -146,14 +149,16 @@ class GroupsController < ApplicationController
   # @returns [Group]
   def index
     return context_index if @context
-    @groups = @current_user.try(:current_groups)
-    # can't use #try, cause it's not defined on the association class,
-    # so it will try to load the association and call it on the resulting array'
-    @groups = @groups.with_each_shard({ :include => :group_category, :order => "groups.id ASC" }) if @groups
-    @groups ||= []
     respond_to do |format|
-      format.html {}
+      format.html do
+        @groups = @current_user.current_groups.
+          with_each_shard{ |scope| scope.includes(:group_category) }
+      end
+
       format.json do
+        @groups = BookmarkedCollection.with_each_shard(
+          Group::Bookmarker,
+          @current_user.current_groups) { |scope| scope.includes(:group_category) }
         @groups = Api.paginate(@groups, self, api_v1_current_user_groups_url)
         render :json => @groups.map { |g| group_json(g, @current_user, session) }
       end
@@ -172,8 +177,8 @@ class GroupsController < ApplicationController
   def context_index
     return unless authorized_action(@context, @current_user, :read_roster)
 
-    @groups      = @context.groups.active.scoped(:order => 'name, created_at')
-    @categories  = @context.group_categories.scoped(:order => "role <> 'student_organized', name")
+    @groups      = @context.groups.active.order(:name, :created_at)
+    @categories  = @context.group_categories.order("role <> 'student_organized'", :name)
     @user_groups = @current_user.group_memberships_for(@context) if @current_user
 
     unless api_request?
@@ -280,16 +285,21 @@ class GroupsController < ApplicationController
 
   # @API Create a group
   #
-  # Creates a new group. Right now, only community groups can be created
-  # through the API.
+  # Creates a new group. Groups created using the "/api/v1/groups/"
+  # endpoint will be community groups.
   #
-  # @argument name
-  # @argument description
-  # @argument is_public
-  # @argument join_level
+  # @argument name the name of the group
+  # @argument description a description of the group
+  # @argument is_public whether the group is public (applies only to
+  #   community groups)
+  # @argument join_level parent_context_auto_join, parent_context_request,
+  #   or invitation_only
+  # @argument storage_quota_mb The allowed file storage for the group,
+  #   in megabytes. This parameter is ignored if the caller does not have
+  #   the manage_storage_quotas permission.
   #
   # @example_request
-  #     curl https://<canvas>/api/v1/groups/<group_id> \ 
+  #     curl https://<canvas>/api/v1/groups \ 
   #          -F 'name=Math Teachers' \ 
   #          -F 'description=A place to gather resources for our classes.' \ 
   #          -F 'is_public=true' \ 
@@ -298,10 +308,17 @@ class GroupsController < ApplicationController
   #
   # @returns Group
   def create
-    # only allow community groups from the api right now
     if api_request?
-      @context = @domain_root_account
-      params[:group_category] = GroupCategory.communities_for(@context)
+      if params[:group_category_id]
+        group_category = GroupCategory.find(params[:group_category_id])
+        return render :json => {}, :status => bad_request unless group_category
+        @context = group_category.context
+        params[:group_category] = group_category
+        return unless authorized_action(group_category.context, @current_user, :manage_groups)
+      else
+        @context = @domain_root_account
+        params[:group_category] = GroupCategory.communities_for(@context)
+      end
     elsif params[:group]
       group_category_id = params[:group].delete :group_category_id
       if group_category_id && @context.grants_right?(@current_user, session, :manage_groups)
@@ -314,6 +331,7 @@ class GroupsController < ApplicationController
     end
 
     attrs = api_request? ? params : params[:group]
+    attrs.delete :storage_quota_mb unless @context.grants_right? @current_user, session, :manage_storage_quotas
     @group = @context.groups.new(attrs.slice(*SETTABLE_GROUP_ATTRIBUTES))
 
     if authorized_action(@group, @current_user, :create)
@@ -347,6 +365,9 @@ class GroupsController < ApplicationController
   # @argument join_level
   # @argument avatar_id The id of the attachment previously uploaded to the
   #   group that you would like to use as the avatar image for this group.
+  # @argument storage_quota_mb The allowed file storage for the group,
+  #   in megabytes. This parameter is ignored if the caller does not have
+  #   the manage_storage_quotas permission.
   #
   # @example_request
   #     curl https://<canvas>/api/v1/groups/<group_id> \ 
@@ -365,6 +386,7 @@ class GroupsController < ApplicationController
       params[:group][:group_category] = group_category
     end
     attrs = api_request? ? params : params[:group]
+    attrs.delete :storage_quota_mb unless @group.context.grants_right? @current_user, session, :manage_storage_quotas
 
     if avatar_id = (params[:avatar_id] || (params[:group] && params[:group][:avatar_id]))
       attrs[:avatar_attachment] = @group.active_images.find_by_id(avatar_id)
@@ -459,7 +481,7 @@ class GroupsController < ApplicationController
   def unfollow
     find_group
     if authorized_action(@group, @current_user, :follow)
-      user_follow = @current_user.user_follows.find(:first, :conditions => { :followed_item_id => @group.id, :followed_item_type => 'Group' })
+      user_follow = @current_user.user_follows.where(:followed_item_id => @group, :followed_item_type => 'Group').first
       user_follow.try(:destroy)
       render :json => { "ok" => true }
     end
@@ -492,7 +514,7 @@ class GroupsController < ApplicationController
   def accept_invitation
     require_user
     find_group
-    @membership = @group.group_memberships.scoped(:conditions => { :uuid => params[:uuid] }).first if @group
+    @membership = @group.group_memberships.where(:uuid => params[:uuid]).first if @group
     @membership.accept! if @membership.try(:invited?)
     if @membership.try(:active?)
       flash[:notice] = t('notices.welcome', "Welcome to the group %{group_name}!", :group_name => @group.name)
@@ -505,43 +527,6 @@ class GroupsController < ApplicationController
       respond_to do |format|
         format.html { redirect_to(dashboard_url) }
         format.json { render :json => "Unable to find associated group invitation", :status => :bad_request }
-      end
-    end
-  end
-
-  def create_category
-    if authorized_action(@context, @current_user, :manage_groups)
-      @group_category = @context.group_categories.build
-      if populate_group_category_from_params
-        create_default_groups_in_category
-        flash[:notice] = t('notices.create_category_success', 'Category was successfully created.')
-        render :json => [@group_category.as_json, @group_category.groups.map{ |g| g.as_json(:include => :users) }].to_json
-      end
-    end
-  end
-
-  def update_category
-    if authorized_action(@context, @current_user, :manage_groups)
-      @group_category = @context.group_categories.find_by_id(params[:category_id])
-      return render(:json => { 'status' => 'not found' }, :status => :not_found) unless @group_category
-      return render(:json => { 'status' => 'unauthorized' }, :status => :unauthorized) if @group_category.protected?
-      if populate_group_category_from_params
-        flash[:notice] = t('notices.update_category_success', 'Category was successfully updated.')
-        render :json => @group_category.to_json
-      end
-    end
-  end
-
-  def delete_category
-    if authorized_action(@context, @current_user, :manage_groups)
-      @group_category = @context.group_categories.find_by_id(params[:category_id])
-      return render(:json => { 'status' => 'not found' }, :status => :not_found) unless @group_category
-      return render(:json => { 'status' => 'unauthorized' }, :status => :unauthorized) if @group_category.protected?
-      if @group_category.destroy
-        flash[:notice] = t('notices.delete_category_success', "Category successfully deleted")
-        render :json => {:deleted => true}
-      else
-        render :json => {:deleted => false}
       end
     end
   end
@@ -637,7 +622,7 @@ class GroupsController < ApplicationController
     # do the distribution and note the changes
     groups = category.groups.active
     potential_members = @context.users_not_in_groups(groups)
-    memberships = distribute_members_among_groups(potential_members, groups)
+    memberships = category.distribute_members_among_groups(potential_members, groups)
 
     # render the changes
     json = memberships.group_by{ |m| m.group_id }.map do |group_id, new_members|
@@ -688,88 +673,5 @@ class GroupsController < ApplicationController
     end
   end
 
-  def populate_group_category_from_params
-    name = params[:category][:name] || @group_category.name
-    name = t(:default_category_title, "Study Groups") if name.blank?
-    if GroupCategory.protected_name_for_context?(name, @context)
-      render :json => { 'category[name]' => t('errors.category_name_reserved', "%{category_name} is a reserved name.", :category_name => name) }, :status => :bad_request
-      return false
-    elsif @context.group_categories.other_than(@group_category).find_by_name(name)
-      render :json => { 'category[name]' => t('errors.category_name_unavailable', "%{category_name} is already in use.", :category_name => name) }, :status => :bad_request
-      return false
-    elsif name.length >= 250 && params[:category][:split_group_count].to_i > 0
-      render :json => { 'category[name]' => t('errors.category_name_too_long', "Enter a shorter category name to split students into groups") }, :status => :bad_request
-      return false
-    end
 
-    enable_self_signup = params[:category][:enable_self_signup] == "1"
-    restrict_self_signup = params[:category][:restrict_self_signup] == "1"
-    if enable_self_signup && restrict_self_signup && @group_category.has_heterogenous_group?
-      render :json => { 'category[restrict_self_signup]' => t('errors.cant_restrict_self_signup', "Can't enable while a mixed-section group exists in the category.") }, :status => :bad_request
-      return false
-    end
-
-    @group_category.name = name
-    @group_category.configure_self_signup(enable_self_signup, restrict_self_signup)
-    @group_category.save
-  end
-
-  def create_default_groups_in_category
-    self_signup = params[:category][:enable_self_signup] == "1"
-    distribute_members = !self_signup && params[:category][:split_groups] == "1"
-    return unless self_signup || distribute_members
-    potential_members = distribute_members ? @context.users_not_in_groups([]) : nil
-
-    count_field = self_signup ? :create_group_count : :split_group_count
-    count = params[:category][count_field].to_i
-    count = 0 if count < 0
-    count = [count, Setting.get_cached('max_groups_in_new_category', '200').to_i].min
-    count = potential_members.length if distribute_members && count > potential_members.length
-    return if count.zero?
-
-    # TODO i18n
-    group_name = @group_category.name
-    group_name = group_name.singularize if I18n.locale == :en
-    count.times do |idx|
-      @group_category.groups.create(:name => "#{group_name} #{idx + 1}", :context => @context)
-    end
-
-    distribute_members_among_groups(potential_members, @group_category.groups) if distribute_members
-  end
-
-  def distribute_members_among_groups(members, groups)
-    return [] if groups.empty?
-    new_memberships = []
-    touched_groups = [].to_set
-
-    groups_by_size = {}
-    groups.each do |group|
-      size = group.users.size
-      groups_by_size[size] ||= []
-      groups_by_size[size] << group
-    end
-    smallest_group_size = groups_by_size.keys.min
-
-    members.sort_by{ rand }.each do |member|
-      group = groups_by_size[smallest_group_size].first
-      membership = group.add_user(member)
-      if membership.valid?
-        new_memberships << membership
-        touched_groups << group.id
-
-        # successfully added member to group, move it to the new size bucket
-        groups_by_size[smallest_group_size].shift
-        groups_by_size[smallest_group_size + 1] ||= []
-        groups_by_size[smallest_group_size + 1] << group
-
-        # was that the last group of that size?
-        if groups_by_size[smallest_group_size].empty?
-          groups_by_size.delete(smallest_group_size)
-          smallest_group_size += 1
-        end
-      end
-    end
-    Group.update_all({:updated_at => Time.now.utc}, :id => touched_groups.to_a) unless touched_groups.empty?
-    return new_memberships
-  end
 end

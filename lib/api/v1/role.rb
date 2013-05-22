@@ -31,13 +31,15 @@ module Api::V1::Role
     }
 
     RoleOverride.manageable_permissions(account).keys.each do |permission|
-      json[:permissions][permission] = permission_json(RoleOverride.permission_for(account, permission, role.base_role_type, role.name), current_user, session)
+      perm = RoleOverride.permission_for(account, permission, role.base_role_type, role.name)
+      json[:permissions][permission] = permission_json(perm, current_user, session) if perm[:account_allows]
     end
 
     json
   end
 
   def permission_json(permission, current_user, session)
+    permission = permission.dup
     permission[:enabled] = !!permission[:enabled]
     permission[:prior_default] = !!permission[:prior_default]
     permission.delete(:prior_default) unless permission[:explicit]

@@ -97,9 +97,11 @@
 #         // URL to the external tool
 #         url: "http://instructure.com",
 #         // Whether or not there is a new tab for the external tool
-#         new_tab: false
+#         new_tab: false,
+#         // the identifier for this tool_tag
+#         resource_link_id: 'ab81173af98b8c33e66a'
 #       },
-#       
+#
 #       // Boolean indicating if peer reviews are required for this assignment
 #       peer_reviews: false,
 #
@@ -119,7 +121,6 @@
 #       // NOTE: This key is NOT present unless you have automatic_peer_reviews
 #       // set to true.
 #       peer_reviews_assign_at: "2012-07-01T23:59:00-06:00",
-#
 #
 #       // the ID of the assignment’s group set (if this is a group assignment)
 #       group_category_id: 1,
@@ -150,8 +151,15 @@
 #       // "percent", "letter_grade", "points"
 #       grading_type: "points",
 #
+#       // The id of the grading standard being applied to this assignment.
+#       // Valid if grading_type is "letter_grade".
+#       grading_standard_id: null,
+#
 #       // (Optional) explanation of lock status
 #       lock_explanation: "This assignment is locked until September 1 at 12:00am",
+#
+#       // (Optional) id of the associated quiz (applies only when submission_types is ["online_quiz"])
+#       quiz_id: 620,
 #
 #       // (Optional) whether anonymous submissions are accepted (applies only to quiz assignments)
 #       anonymous_submissions: false,
@@ -159,7 +167,12 @@
 #       // (Optional) the DiscussionTopic associated with the assignment, if applicable
 #       discussion_topic: { ... },
 #
-#       // (Optional) Boolean indicating if assignment is frozen.
+#       // (Optional) Boolean indicating if assignment will be frozen when it is copied.
+#       // NOTE: This field will only be present if the AssignmentFreezer
+#       // plugin is available for your account.
+#       freeze_on_copy: false,
+#
+#       // (Optional) Boolean indicating if assignment is frozen for the calling user.
 #       // NOTE: This field will only be present if the AssignmentFreezer
 #       // plugin is available for your account.
 #       frozen: false,
@@ -168,15 +181,26 @@
 #       // Only account administrators currently have permission to
 #       // change an attribute in this list. Will be empty if no attributes
 #       // are frozen for this assignment.
+#       // Possible frozen attributes are: title, description, lock_at,
+#       // points_possible, grading_type, submission_types, assignment_group_id,
+#       // allowed_extensions, group_category_id, notify_of_update, peer_reviews
 #       // NOTE: This field will only be present if the AssignmentFreezer
 #       // plugin is available for your account.
 #       frozen_attributes: [ "title" ],
+#
+#       // (Optional) If 'submission' is included in the 'include' parameter,
+#       // includes a Submission object that represents the current user's
+#       // (user who is requesting information from the api) current submission
+#       // for the assignment. See the Submissions API for an example
+#       // response. If the user does not have a submission, this key
+#       // will be absent.
+#       submission: { ... },
 #
 #       // (Optional) If true, the rubric is directly tied to grading the assignment.
 #       // Otherwise, it is only advisory. Included if there is an associated rubric.
 #       use_rubric_for_grading: true,
 #
-#       // (Optional) An object describing the basic attributes of the rubric, including 
+#       // (Optional) An object describing the basic attributes of the rubric, including
 #       // the point total. Included if there is an associated rubric.
 #       rubric_settings: {
 #         points_possible: 12
@@ -229,36 +253,58 @@
 #
 class AssignmentsApiController < ApplicationController
   before_filter :require_context
-
   include Api::V1::Assignment
+  include Api::V1::Submission
   include Api::V1::AssignmentOverride
 
   # @API List assignments
   # Returns the list of assignments for the current context.
+  # @argument include[] ["submission"] Associations to include with the
+  # assignment.
   # @returns [Assignment]
   def index
     if authorized_action(@context, @current_user, :read)
-      @assignments = @context.active_assignments.find(:all,
-          :include => [:assignment_group, :rubric_association, :rubric],
-          :order => "assignment_groups.position, assignments.position")
+      @assignments = @context.active_assignments.
+          includes(:assignment_group, :rubric_association, :rubric).
+          reorder("assignment_groups.position, assignments.position")
 
-      hashes = @assignments.map { |assignment|
-        assignment_json(assignment, @current_user, session) }
+      if Array(params[:include]).include?('submission')
+        submissions = Hash[
+          @context.submissions.where(:assignment_id => @assignments).
+                                    except(:includes).
+                                    for_user(@current_user).
+                                    map do |s|
+                                      [s.assignment_id,s]
+                                    end
+        ]
+      else
+        submissions = {}
+      end
+      hashes = @assignments.map do |assignment|
+        submission = submissions[assignment.id]
+        assignment_json(assignment, @current_user, session,true,submission)
+      end
 
       render :json => hashes.to_json
     end
   end
 
-  # @API Get a single assignment 
+  # @API Get a single assignment
   # Returns the assignment with the given id.
   # @returns Assignment
+  # @argument include[] ["submission"] Associations to include with the
+  # assignment.
   def show
     if authorized_action(@context, @current_user, :read)
       @assignment = @context.active_assignments.find(params[:id],
           :include => [:assignment_group, :rubric_association, :rubric])
-
+      if Array(params[:include]).include?('submission')
+        submission = @assignment.submissions.for_user(@current_user).first
+      else
+         submission =  nil
+      end
       @assignment.context_module_action(@current_user, :read) unless @assignment.locked_for?(@current_user, :check_policies => true)
-      render :json => assignment_json(@assignment, @current_user, session)
+      render :json => assignment_json(@assignment, @current_user, session,true,submission)
     end
   end
 
@@ -289,10 +335,9 @@ class AssignmentsApiController < ApplicationController
   #   allowed submission types:
   #
   #     "online_upload"
-  #     "online_media_recording"
   #     "online_text_entry"
   #     "online_url"
-  #     "online_media_recording" Only valid when the Kaltura plugin is enabled.
+  #     "media_recording" (Only valid when the Kaltura plugin is enabled)
   #
   # @argument assignment[allowed_extensions] [Array]
   #   Allowed extensions if submission_types includes "online_upload"
@@ -369,6 +414,12 @@ class AssignmentsApiController < ApplicationController
   #   The assignment group id to put the assignment in.
   #   Defaults to the top assignment group in the course.
   #
+  # @argument assignment[muted] [Boolean]
+  #   Whether this assignment is muted.
+  #   A muted assignment does not send change notifications
+  #   and hides grades from students.
+  #   Defaults to false.
+  #
   # @argument assignment[assignment_overrides] [Optional, [AssignmentOverride]]
   #   List of overrides for the assignment.
   #   NOTE: The assignment overrides feature is in beta.
@@ -385,7 +436,7 @@ class AssignmentsApiController < ApplicationController
   # @API Edit an assignment
   # Modify an existing assignment. See the documentation for assignment
   # creation.
-  # 
+  #
   # If the assignment[assignment_overrides] key is absent, any existing
   # overrides are kept as is. If the assignment[assignment_overrides] key is
   # present, existing overrides are updated or deleted (and new ones created,
@@ -397,55 +448,19 @@ class AssignmentsApiController < ApplicationController
   def update
     @assignment = @context.assignments.find(params[:id])
 
-    if authorized_action(@assignment, @current_user, :update_content)
+    if authorized_action(@assignment, @current_user, :update)
       save_and_render_response
     end
   end
 
   def save_and_render_response
-    if @assignment.frozen_for_user?( @current_user )
-      render :json => {:message => t("errors.no_edit_frozen",
-        "You do not have permission to edit frozen assignments. Please see your account administrator."
-      )}.to_json, :status => 400
-    elsif update_and_save_assignment(@assignment, params[:assignment])
+    @assignment.content_being_saved_by(@current_user)
+    if update_api_assignment(@assignment, params[:assignment])
       render :json => assignment_json(@assignment, @current_user, session).to_json, :status => 201
     else
       # TODO: we don't really have a strategy in the API yet for returning
       # errors.
       render :json => "error".to_json, :status => 400
     end
-  end
-
-  protected
-
-  def update_and_save_assignment(assignment, assignment_params)
-    return if assignment_params.nil?
-
-    # convert hashes like {0 => x, 1 => y} into arrays like [x, y]
-    overrides = assignment_params[:assignment_overrides]
-    if overrides.is_a?(Hash)
-      return unless overrides.keys.all?{ |k| k.to_i.to_s == k.to_s }
-      indices = overrides.keys.sort_by(&:to_i)
-      return unless indices.map(&:to_i) == (0...indices.size).to_a
-      overrides = indices.map{ |index| overrides[index] }
-    end
-
-    # require it to be formatted as an array if it's present
-    return if overrides && !overrides.is_a?(Array)
-
-    # do the updating
-    update_api_assignment(assignment, assignment_params, false)
-    if overrides
-      assignment.transaction do
-        assignment.save_without_broadcasting!
-        batch_update_assignment_overrides(assignment, overrides)
-      end
-      assignment.do_notifications!
-    else
-      assignment.save!
-    end
-    return true
-  rescue ActiveRecord::RecordInvalid
-    return false
   end
 end

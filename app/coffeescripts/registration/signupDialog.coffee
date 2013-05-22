@@ -5,20 +5,21 @@ define [
   'compiled/registration/registrationErrors'
   'jst/registration/teacherDialog'
   'jst/registration/studentDialog'
-  'jst/registration/studentHigherEdDialog'
   'jst/registration/parentDialog'
   'jquery.instructure_forms'
   'jquery.instructure_date_and_time'
-], (_, I18n, preventDefault, registrationErrors, teacherDialog, studentDialog, studentHigherEdDialog, parentDialog) ->
+], (_, I18n, preventDefault, registrationErrors, teacherDialog, studentDialog, parentDialog) ->
 
   $nodes = {}
-  templates = {teacherDialog, studentDialog, studentHigherEdDialog, parentDialog}
+  templates = {teacherDialog, studentDialog, parentDialog}
 
   signupDialog = (id, title) ->
     return unless templates[id]
     $node = $nodes[id] ?= $('<div />')
     $node.html templates[id](
+      hiddenFields: ENV.HIDDEN_FIELDS || []
       terms_url: "http://www.instructure.com/terms-of-use"
+      privacy_url: "http://www.instructure.com/privacy-policy"
     )
     $node.find('.date-field').datetime_field()
 
@@ -29,27 +30,14 @@ define [
     $form = $node.find('form')
     promise = null
     $form.formSubmit
-      beforeSubmit: ->
-        promise = $.Deferred()
-        $form.disableWhileLoading(promise)
+      disableWhileLoading: 'spin_on_success'
+      errorFormatter: registrationErrors
       success: (data) =>
         # they should now be authenticated (either registered or pre_registered)
         if data.course
           window.location = "/courses/#{data.course.course.id}?registration_success=1"
         else
           window.location = "/?registration_success=1"
-      formErrors: false
-      error: (errors) ->
-        promise.reject()
-        if _.any(errors.user.birthdate ? [], (e) -> e.type is 'too_young')
-          $node.find('.registration-dialog').text I18n.t('too_young_error_join_code', 'You must be at least %{min_years} years of age to use Canvas without a course join code.', min_years: ENV.USER.MIN_AGE)
-          $node.dialog buttons: [
-            text: I18n.t('ok', "OK")
-            click: -> $node.dialog('close')
-            class: 'btn-primary'
-          ]
-          return
-        $form.formErrors registrationErrors(errors)
 
     $node.dialog
       resizable: false

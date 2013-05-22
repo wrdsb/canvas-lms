@@ -39,7 +39,7 @@ module Api::V1::DiscussionTopics
       url = feeds_topic_format_path(topic.id, code, :rss)
     end
 
-    children = topic.child_topics.scoped(:select => 'id').map(&:id)
+    children = topic.child_topics.pluck(:id)
 
     api_json(topic, user, session, {
                   :only => %w(id title assignment_id delayed_post_at last_reply_at posted_at root_topic_id podcast_has_student_posts),
@@ -79,13 +79,13 @@ module Api::V1::DiscussionTopics
   def discussion_entry_api_json(entries, context, user, session, includes = [:user_name, :subentries])
     entries.map do |entry|
       if entry.deleted?
-        json = api_json(entry, user, session, :only => %w(id created_at updated_at parent_id))
+        json = api_json(entry, user, session, :only => %w(id created_at updated_at parent_id editor_id))
         json[:deleted] = true
       else
         json = api_json(entry, user, session,
                         :only => %w(id user_id created_at updated_at parent_id))
         json[:user_name] = entry.user_name if includes.include?(:user_name)
-        json[:editor_id] = entry.editor_id if entry.editor_id && entry.editor_id != entry.user_id
+        json[:editor_id] = entry.editor_id if entry.editor_id
         json[:message] = api_user_content(entry.message, context, user)
         if entry.attachment
           json[:attachment] = attachment_json(entry.attachment, user, :host => HostUrl.context_host(context))
@@ -96,7 +96,7 @@ module Api::V1::DiscussionTopics
       json[:read_state] = entry.read_state(user) if user
 
       if includes.include?(:subentries) && entry.root_entry_id.nil?
-        replies = entry.flattened_discussion_subentries.active.newest_first.find(:all, :limit => 11).to_a
+        replies = entry.flattened_discussion_subentries.active.newest_first.limit(11).all
         unless replies.empty?
           json[:recent_replies] = discussion_entry_api_json(replies.first(10), context, user, session, includes)
           json[:has_more_replies] = replies.size > 10

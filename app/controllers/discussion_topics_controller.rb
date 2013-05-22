@@ -103,6 +103,7 @@ class DiscussionTopicsController < ApplicationController
 
   include Api::V1::DiscussionTopics
   include Api::V1::Assignment
+  include Api::V1::AssignmentOverride
 
   # @API List discussion topics
   #
@@ -171,7 +172,21 @@ class DiscussionTopicsController < ApplicationController
         hash[:ATTRIBUTES] = discussion_topic_api_json(@topic, @context, @current_user, session)
       end
       (hash[:ATTRIBUTES] ||= {})[:is_announcement] = @topic.is_announcement
-      js_env :DISCUSSION_TOPIC => hash
+      handle_assignment_edit_params(hash[:ATTRIBUTES])
+
+      if @topic.assignment.present?
+        hash[:ATTRIBUTES][:assignment][:assignment_overrides] =
+          (assignment_overrides_json(@topic.assignment.overrides_visible_to(@current_user)))
+      end
+
+      categories = @context.respond_to?(:group_categories) ? @context.group_categories : []
+      sections = @context.respond_to?(:course_sections) ? @context.course_sections.active : []
+      js_env :DISCUSSION_TOPIC => hash,
+             :SECTION_LIST => sections.map { |section| { :id => section.id, :name => section.name } },
+             :GROUP_CATEGORIES => categories.
+                                  reject { |category| category.student_organized? }.
+                                  map { |category| { :id => category.id, :name => category.name } },
+             :CONTEXT_ID => @context.id
       render :action => "edit"
     end
   end
@@ -179,6 +194,12 @@ class DiscussionTopicsController < ApplicationController
   def show
     parent_id = params[:parent_id]
     @topic = @context.all_discussion_topics.find(params[:id])
+    @presenter = DiscussionTopicPresenter.new(@topic, @current_user)
+    @assignment = if @topic.for_assignment?
+      AssignmentOverrideApplicator.assignment_overridden_for(@topic.assignment, @current_user)
+    else
+      nil
+    end
     @context.assert_assignment_group rescue nil
     add_discussion_or_announcement_crumb
     add_crumb(@topic.title, named_context_url(@context, :context_discussion_topic_url, @topic.id))
@@ -204,6 +225,8 @@ class DiscussionTopicsController < ApplicationController
 
       @initial_post_required = @topic.initial_post_required?(@current_user, @context_enrollment, session)
 
+      @padless = true
+
       log_asset_access(@topic, 'topics', 'topics')
       respond_to do |format|
         if @topic.deleted?
@@ -224,6 +247,7 @@ class DiscussionTopicsController < ApplicationController
               :PERMISSIONS => {
                 :CAN_REPLY => !(@topic.for_group_assignment? || @topic.locked?),
                 :CAN_ATTACH => @topic.grants_right?(@current_user, session, :attach),
+                :CAN_MANAGE_OWN => @context.user_can_manage_own_discussion_posts?(@current_user),
                 :MODERATE => @context.grants_right?(@current_user, session, :moderate_forum)
               },
               :ROOT_URL => named_context_url(@context, :api_v1_context_discussion_topic_view_url, @topic),
@@ -237,8 +261,12 @@ class DiscussionTopicsController < ApplicationController
               :INITIAL_POST_REQUIRED => @initial_post_required,
               :THREADED => @topic.threaded?
             }
-            if @topic.for_assignment? && @topic.assignment.grants_right?(@current_user, session, :grade)
-              env_hash[:SPEEDGRADER_URL_TEMPLATE] = named_context_url(@topic.assignment.context, :speed_grader_context_gradebook_url, :assignment_id => @topic.assignment.id, :anchor => {:student_id => ":student_id"}.to_json)
+            if @topic.for_assignment? &&
+               @topic.assignment.grants_right?(@current_user, session, :grade) && @presenter.allows_speed_grader?
+              env_hash[:SPEEDGRADER_URL_TEMPLATE] = named_context_url(@topic.assignment.context,
+                                                                      :speed_grader_context_gradebook_url,
+                                                                      :assignment_id => @topic.assignment.id,
+                                                                      :anchor => {:student_id => ":student_id"}.to_json)
             end
             js_env :DISCUSSION => env_hash
 
@@ -389,6 +417,10 @@ class DiscussionTopicsController < ApplicationController
         @topic.workflow_state = 'active' if @topic.post_delayed? && !@topic.delayed_post_at
       end
 
+      if discussion_topic_hash.has_key?(:message)
+        discussion_topic_hash[:message] = process_incoming_html_content(discussion_topic_hash[:message])
+      end
+
       #handle locking/unlocking
       if params.has_key? :locked
         if value_to_boolean(params[:locked])
@@ -429,7 +461,7 @@ class DiscussionTopicsController < ApplicationController
         end
 
         # handle creating/deleting assignment
-        if params[:assignment]
+        if params[:assignment] && !@topic.root_topic_id?
           if params[:assignment].has_key?(:set_assignment) && !value_to_boolean(params[:assignment][:set_assignment])
             if @topic.assignment && @topic.assignment.grants_right?(@current_user, session, :update)
               assignment = @topic.assignment
@@ -469,6 +501,20 @@ class DiscussionTopicsController < ApplicationController
 
   def user_can_edit_course_settings?
     @context.is_a?(Course) && @context.grants_right?(@current_user, session, :update)
+  end
+
+  def handle_assignment_edit_params(hash)
+    hash[:title] = params[:title] if params[:title]
+    if params.slice(*[:due_at, :points_possible, :assignment_group_id]).present?
+      if hash[:assignment].nil? && @context.respond_to?(:assignments) && @context.assignments.new.grants_right?(@current_user, session, :create)
+        hash[:assignment] ||= {}
+      end
+      if !hash[:assignment].nil?
+        hash[:assignment][:due_at] = params[:due_at].to_date if params[:due_at]
+        hash[:assignment][:points_possible] = params[:points_possible] if params[:points_possible]
+        hash[:assignment][:assignment_group_id] = params[:assignment_group_id] if params[:assignment_group_id]
+      end
+    end
   end
 
 end

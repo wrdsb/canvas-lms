@@ -96,9 +96,9 @@ describe "dashboard" do
     it "should remove the stream item category if all items are removed"
 
     it "should show conversation stream items on the dashboard" do
-      c = User.create.initiate_conversation([@user.id, User.create.id])
+      c = User.create.initiate_conversation([@user, User.create])
       c.add_message('test')
-      c.add_participants([User.create.id])
+      c.add_participants([User.create])
 
       items = @user.stream_item_instances
       items.size.should == 1
@@ -174,7 +174,7 @@ describe "dashboard" do
 
       get "/"
 
-      ffj(".to-do-list li:visible").size.should == 5 + 1 # +1 is the see more link
+      keep_trying_until { ffj(".to-do-list li:visible").size.should == 5 + 1 } # +1 is the see more link
       f(".more_link").click
       wait_for_animations
       ffj(".to-do-list li:visible").size.should == 20
@@ -205,7 +205,7 @@ describe "dashboard" do
 
     it "should display student groups in course menu" do
       @course.update_attributes(:start_at => 2.days.from_now, :conclude_at => 4.days.from_now, :restrict_enrollments_to_course_dates => false)
-      Enrollment.update_all(["created_at = ?", 1.minute.ago])
+      Enrollment.update_all(:created_at => 1.minute.ago)
 
       get "/"
 
@@ -221,7 +221,7 @@ describe "dashboard" do
       group = Group.create!(:name => "group1", :context => @course)
       group.add_user(@user)
       @course.update_attributes(:start_at => 2.days.from_now, :conclude_at => 4.days.from_now, :restrict_enrollments_to_course_dates => false)
-      Enrollment.update_all(["created_at = ?", 1.minute.ago])
+      Enrollment.update_all(:created_at =>  1.minute.ago)
 
       get "/"
 
@@ -277,6 +277,7 @@ describe "dashboard" do
       @assignment.save!
 
       get "/"
+      keep_trying_until { ffj(".events_list .event .tooltip_wrap").size.should > 0 }
       driver.execute_script("$('.events_list .event .tooltip_wrap, .events_list .event .tooltip_text').css('visibility', 'visible')")
       f('.events_list .event .tooltip_wrap').should include_text 'submitted'
     end
@@ -296,7 +297,7 @@ describe "dashboard" do
       @enrollment.workflow_state = 'active'
       @enrollment.save!
       @second_course.reload
-      Enrollment.update_all(["created_at = ?", 1.minute.ago]) # need to make created_at and updated_at different
+      Enrollment.update_all(:created_at => 1.minute.ago) # need to make created_at and updated_at different
 
       get "/"
       f('.no-recent-messages').should be_nil

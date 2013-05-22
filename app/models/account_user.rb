@@ -25,6 +25,7 @@ class AccountUser < ActiveRecord::Base
   after_save :touch_user
   after_destroy :touch_user
   after_save :update_account_associations_if_changed
+  after_destroy :update_account_associations_later
   attr_accessible :account, :user, :membership_type
 
   validates_presence_of :account_id, :user_id
@@ -45,6 +46,10 @@ class AccountUser < ActiveRecord::Base
         self.user.update_account_associations_later
       end
     end
+  end
+
+  def update_account_associations_later
+    self.user.update_account_associations_later
   end
 
   def infer_defaults
@@ -143,7 +148,5 @@ class AccountUser < ActiveRecord::Base
     account_ids_for_user(user).include?(account_id)
   end
   
-  named_scope :for_user, lambda{|user|
-    {:conditions => ['account_users.user_id = ?', user.id] }
-  }
+  scope :for_user, lambda { |user| where(:user_id => user) }
 end

@@ -51,7 +51,6 @@ define [
       @chunk_start = 0
       @students = {}
       @rows = []
-      @studentsPage = 1
       @sortFn = (student) -> student.sortable_name
       @assignmentsToHide = userSettings.contextGet('hidden_columns') || []
       @sectionToShow = userSettings.contextGet 'grading_show_only_section'
@@ -70,12 +69,31 @@ define [
       else
         'students_url'
 
-      promise = $.when(
-        $.ajaxJSON( @options[enrollmentsUrl], "GET"),
-        $.ajaxJSON( @options.assignment_groups_url, "GET", {}, @gotAssignmentGroups),
-        $.ajaxJSON( @options.sections_url, "GET", {}, @gotSections)
-      ).then ([students, status, xhr]) =>
-        @gotChunkOfStudents(students, xhr)
+      # getting all the enrollments for a course via the api in the polite way
+      # is too slow, so we're going to cheat.
+      $.when($.ajaxJSON(@options[enrollmentsUrl], "GET")
+      , $.ajaxJSON(@options.assignment_groups_url, "GET", {}, @gotAssignmentGroups)
+      , $.ajaxJSON( @options.sections_url, "GET", {}, @gotSections))
+      .then ([students, status, xhr]) =>
+        @gotChunkOfStudents students
+
+        paginationLinks = xhr.getResponseHeader('Link')
+        lastLink = paginationLinks.match(/<[^>]+>; *rel="last"/)
+        unless lastLink?
+          @gotAllStudents()
+          return
+        lastPage = lastLink[0].match(/page=(\d+)/)[1]
+        lastPage = parseInt lastPage, 10
+
+        fetchEnrollments = (page) =>
+          $.ajaxJSON @options[enrollmentsUrl], "GET", {page}
+        dfds = (fetchEnrollments(page) for page in [2..lastPage])
+        $.when(dfds...).then (responses...) =>
+          if dfds.length == 1
+            @gotChunkOfStudents responses[0]
+          else
+            @gotChunkOfStudents(students) for [students, x, y] in responses
+          @gotAllStudents()
 
       @spinner = new Spinner()
       $(@spinner.spin().el).css(
@@ -107,20 +125,13 @@ define [
         @sections[section.id] = section
       @sections_enabled = sections.length > 1
 
-    gotChunkOfStudents: (studentEnrollments, xhr) =>
+    gotChunkOfStudents: (studentEnrollments) =>
       for studentEnrollment in studentEnrollments
         student = studentEnrollment.user
         student.enrollment = studentEnrollment
         @students[student.id] ||= htmlEscape(student)
         @students[student.id].sections ||= []
         @students[student.id].sections.push(studentEnrollment.course_section_id)
-
-      link = xhr.getResponseHeader('Link')
-      if link && link.match /rel="next"/
-        @studentsPage += 1
-        $.ajaxJSON( @options.students_url, "GET", { "page": @studentsPage}, @gotChunkOfStudents)
-      else
-        @gotAllStudents()
 
     gotAllStudents: ->
       for id, student of @students
@@ -147,42 +158,94 @@ define [
       @getSubmissionsChunks()
       @initHeader()
 
-    arrangeColumnsBy: (newThingToArrangeBy) =>
-      if newThingToArrangeBy and newThingToArrangeBy != @_sortColumnsBy
-        @$columnArrangementTogglers.each ->
-          $(this).closest('li').showIf $(this).data('arrangeColumnsBy') isnt newThingToArrangeBy
-        @_sortColumnsBy = newThingToArrangeBy
-        userSettings[ if newThingToArrangeBy is 'due_date' then 'contextSet' else 'contextRemove']('sort_grade_colums_by', newThingToArrangeBy)
-        columns = @gradeGrid.getColumns()
-        columns.sort @columnSortFn
-        @gradeGrid.setColumns(columns)
-        @fixColumnReordering()
-        @buildRows()
-      @_sortColumnsBy ||= userSettings.contextGet('sort_grade_colums_by') || 'assignment_group'
+    defaultSortType: 'assignment_group'
+      
 
-    columnSortFn: (a,b) =>
-      return -1 if b.type is 'total_grade'
-      return  1 if a.type is 'total_grade'
-      return -1 if b.type is 'assignment_group' and a.type isnt 'assignment_group'
-      return  1 if a.type is 'assignment_group' and b.type isnt 'assignment_group'
-      if a.type is 'assignment_group' and b.type is 'assignment_group'
-        return a.object.position - b.object.position
-      else if a.type is 'assignment' and b.type is 'assignment'
-        if @arrangeColumnsBy() is 'assignment_group'
-          diffOfAssignmentGroupPosition = a.object.assignment_group.position - b.object.assignment_group.position
-          diffOfAssignmentPosition = a.object.position - b.object.position
+    getStoredSortOrder: =>
+      userSettings.contextGet('sort_grade_columns_by') || { sortType: @defaultSortType }
 
-          # order first by assignment_group position and then by assignment position
-          # will work when there are less than 1000000 assignments in an assignment_group
-          return (diffOfAssignmentGroupPosition * 1000000) + diffOfAssignmentPosition
+    setStoredSortOrder: (newSortOrder) =>
+      if newSortOrder.sortType == @defaultSortType
+        userSettings.contextRemove('sort_grade_columns_by')
+      else
+        userSettings.contextSet('sort_grade_columns_by', newSortOrder)
+
+    storeCustomColumnOrder: =>
+      newSortOrder =
+        sortType: 'custom'
+        customOrder: []
+      columns = @gradeGrid.getColumns()
+      assignment_columns = _.filter(columns, (c) -> c.type is 'assignment')
+      newSortOrder.customOrder = _.map(assignment_columns, (a) -> a.object.id)
+      @setStoredSortOrder(newSortOrder)
+
+    setArrangementTogglersVisibility: (newSortOrder) =>
+      @$columnArrangementTogglers.each ->
+        $(this).closest('li').showIf $(this).data('arrangeColumnsBy') isnt newSortOrder.sortType
+
+    arrangeColumnsBy: (newSortOrder) =>
+      @setArrangementTogglersVisibility(newSortOrder)
+      @setStoredSortOrder(newSortOrder)
+
+      columns = @gradeGrid.getColumns()
+      columns.sort @makeColumnSortFn(newSortOrder)
+      @gradeGrid.setColumns(columns)
+
+      @fixColumnReordering()
+      @buildRows()
+
+    makeColumnSortFn: (sortOrder) =>
+      fn = switch sortOrder.sortType
+        when 'assignment_group' then @compareAssignmentPositions
+        when 'due_date' then @compareAssignmentDueDates
+        when 'custom' then @makeCompareAssignmentCustomOrderFn(sortOrder)
+        else throw "unhandled column sort condition"
+      @wrapColumnSortFn(fn)
+
+    compareAssignmentPositions: (a, b) =>
+      diffOfAssignmentGroupPosition = a.object.assignment_group.position - b.object.assignment_group.position
+      diffOfAssignmentPosition = a.object.position - b.object.position
+
+      # order first by assignment_group position and then by assignment position
+      # will work when there are less than 1000000 assignments in an assignment_group
+      return (diffOfAssignmentGroupPosition * 1000000) + diffOfAssignmentPosition
+
+    compareAssignmentDueDates: (a, b) =>
+      aDate = a.object.due_at?.timestamp or Number.MAX_VALUE
+      bDate = b.object.due_at?.timestamp or Number.MAX_VALUE
+      if aDate is bDate
+        return 0 if a.object.name is b.object.name
+        return (if a.object.name > b.object.name then 1 else -1)
+      return aDate - bDate
+
+    makeCompareAssignmentCustomOrderFn: (sortOrder) =>
+      sortMap = {}
+      indexCounter = 0
+      for assignmentId in sortOrder.customOrder
+        sortMap[String(assignmentId)] = indexCounter
+        indexCounter += 1
+      return (a, b) =>
+        aIndex = sortMap[String(a.object.id)]
+        bIndex = sortMap[String(b.object.id)]
+        if aIndex? and bIndex?
+          return aIndex - bIndex
+        # if there's a new assignment and its order has not been stored, it should come at the end
+        else if aIndex? and not bIndex?
+          return -1
+        else if bIndex?
+          return 1
         else
-          aDate = a.object.due_at?.timestamp or Number.MAX_VALUE
-          bDate = b.object.due_at?.timestamp or Number.MAX_VALUE
-          if aDate is bDate
-            return 0 if a.object.name is b.object.name
-            return (if a.object.name > b.object.name then 1 else -1)
-          return aDate - bDate
-      throw "unhandled column sort condition"
+          return @compareAssignmentPositions(a, b)
+
+    wrapColumnSortFn: (wrappedFn) =>
+      (a, b) =>
+        return -1 if b.type is 'total_grade'
+        return  1 if a.type is 'total_grade'
+        return -1 if b.type is 'assignment_group' and a.type isnt 'assignment_group'
+        return  1 if a.type is 'assignment_group' and b.type isnt 'assignment_group'
+        if a.type is 'assignment_group' and b.type is 'assignment_group'
+          return a.object.position - b.object.position
+        return wrappedFn(a, b)
 
     rowFilter: (student) =>
       !@sectionToShow || (@sectionToShow in student.sections)
@@ -303,12 +366,16 @@ define [
       if val.possible and @options.grading_standard and columnDef.type is 'total_grade'
         letterGrade = GradeCalculator.letter_grade(@options.grading_standard, percentage)
 
-      groupTotalCellTemplate({
+      templateOpts =
         score: val.score
         possible: val.possible
-        letterGrade
-        percentage
-      })
+        letterGrade: letterGrade
+        percentage: percentage
+      if columnDef.type == 'total_grade'
+        templateOpts.warning = @totalGradeWarning
+        templateOpts.lastColumn = true
+
+      groupTotalCellTemplate templateOpts
 
     calculateStudentGrade: (student) =>
       if student.loaded
@@ -451,7 +518,14 @@ define [
     # conjunction with a click listener on <body />. When we 'blur' the grid
     # by clicking outside of it, save the current field.
     onGridBlur: (e) =>
-      return if e.target.className.match(/cell|slick/) or !@gradeGrid.getActiveCell?
+      if e.target.className.match(/cell|slick/) or !@gradeGrid.getActiveCell
+        return
+
+      if e.target.className is 'grade' and @gradeGrid.getCellEditor() instanceof SubmissionCell.out_of 
+        # We can assume that a user clicked the up or down arrows on the
+        # number input, we want to allow them to keep doing that.
+        return
+      
       @gradeGrid.getEditorLock().commitCurrentEdit()
 
     onGridInit: () ->
@@ -505,8 +579,7 @@ define [
         (updateSectionBeingShownText = =>
           $('#section_being_shown').html(if @sectionToShow then @sections[@sectionToShow].name else allSectionsText)
         )()
-        $('#section_to_show').after($sectionToShowMenu).show().kyleMenu
-          buttonOpts: {icons: {primary: "ui-icon-sections", secondary: "ui-icon-droparrow"}}
+        $('#section_to_show').after($sectionToShowMenu).show().kyleMenu()
         $sectionToShowMenu.bind 'menuselect', (event, ui) =>
           @sectionToShow = Number($sectionToShowMenu.find('[aria-checked="true"] input[name="section_to_show_radio"]').val()) || undefined
           userSettings[ if @sectionToShow then 'contextSet' else 'contextRemove']('grading_show_only_section', @sectionToShow)
@@ -532,15 +605,11 @@ define [
 
       @$columnArrangementTogglers = $('#gradebook-toolbar [data-arrange-columns-by]').bind 'click', (event) =>
         event.preventDefault()
-        thingToArrangeBy = $(event.currentTarget).data('arrangeColumnsBy')
-        @arrangeColumnsBy(thingToArrangeBy)
-      @arrangeColumnsBy('assignment_group')
+        newSortOrder = { sortType: $(event.currentTarget).data('arrangeColumnsBy') }
+        @arrangeColumnsBy(newSortOrder)
+      @arrangeColumnsBy(@getStoredSortOrder())
 
-      $('#gradebook_settings').show().kyleMenu
-        buttonOpts:
-          icons:
-            primary: "ui-icon-cog", secondary: "ui-icon-droparrow"
-          text: false
+      $('#gradebook_settings').show().kyleMenu()
 
       $upload_modal = null
       $settingsMenu.find('.gradebook_upload_link').click (event) =>
@@ -549,7 +618,7 @@ define [
           locals =
             download_gradebook_csv_url: "#{@options.context_url}/gradebook.csv"
             action: "#{@options.context_url}/gradebook_uploads"
-            authenticityToken: $("#ajax_authenticity_token").text()
+            authenticityToken: ENV.AUTHENTICITY_TOKEN
           $upload_modal = $(gradebook_uploads_form(locals))
             .dialog
               bgiframe: true
@@ -558,9 +627,6 @@ define [
               width: 720
               resizable: false
             .fixDialogButtons()
-            .delegate '#gradebook-upload-help-trigger', 'click', ->
-              $(this).hide()
-              $('#gradebook-upload-help').show()
         $upload_modal.dialog('open')
 
       $settingsMenu.find('.student_names_toggle').click (e) ->
@@ -628,6 +694,8 @@ define [
       testWidth = (text, minWidth, maxWidth) ->
         width = Math.max($widthTester.text(text).outerWidth(), minWidth)
         Math.min width, maxWidth
+
+      @setAssignmentWarnings()
 
       # I would like to make this width a little larger, but there's a dependency somewhere else that
       # I can't find and if I change it, the layout gets messed up.
@@ -775,5 +843,42 @@ define [
       @multiGrid.parent_grid.onKeyDown.subscribe ->
         # TODO: start editing automatically when a number or letter is typed
         false
+
+      @multiGrid.parent_grid.onColumnsReordered.subscribe @storeCustomColumnOrder
+
       @onGridInit()
 
+    # show warnings for bad grading setups
+    setAssignmentWarnings: =>
+      if @options.group_weighting_scheme == "percent"
+        # assignment group has 0 points possible
+        invalidAssignmentGroups = _.filter @assignmentGroups, (ag) ->
+          pointsPossible = _.inject ag.assignments
+          , ((sum, a) -> sum + (a.points_possible || 0))
+          , 0
+          pointsPossible == 0
+
+        for ag in invalidAssignmentGroups
+          for a in ag.assignments
+            a.invalid = true
+
+        if invalidAssignmentGroups.length > 0
+          groupNames = (ag.name for ag in invalidAssignmentGroups)
+          @totalGradeWarning = I18n.t 'invalid_assignment_groups_warning',
+            one: "Score does not include %{groups} because it has
+                  no points possible"
+            other: "Score does not include %{groups} because they have
+                    no points possible"
+          ,
+            groups: $.toSentence(groupNames)
+            count: groupNames.length
+
+      else
+        # no assignments have points possible
+        pointsPossible = _.inject @assignments
+        , ((sum, a) -> sum + (a.points_possible || 0))
+        , 0
+
+        if pointsPossible == 0
+          @totalGradeWarning = I18n.t 'no_assignments_have_points_warning'
+          , "Can't compute score until an assignment has points possible"

@@ -218,8 +218,7 @@ describe "grades" do
       end
 
       # but then prevent them at the course level
-      @course.settings = { :hide_distribution_graphs => true }
-      @course.save!
+      @course.update_attributes(:hide_distribution_graphs => true)
 
       get "/courses/#{@course.id}/grades"
       f("#grade_info_#{@first_assignment.id} .tooltip").should be_nil
@@ -272,14 +271,14 @@ describe "grades" do
       f("#submission_#{@submission.assignment_id} .grade").should include_text "3"
 
       click_option("#observer_user_url", "Student 2")
-      wait_for_dom_ready
+      wait_for_ajaximations
 
       f("#observer_user_url").should be_displayed
       f("#observer_user_url option[selected]").should include_text "Student 2"
       f("#submission_#{@submission.assignment_id} .grade").should include_text "4"
 
       click_option("#observer_user_url", "Student 1")
-      wait_for_dom_ready
+      wait_for_ajaximations
 
       f("#observer_user_url").should be_displayed
       f("#observer_user_url option[selected]").should include_text "Student 1"

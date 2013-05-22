@@ -209,7 +209,7 @@ describe DiscussionTopic do
       @topic.subtopics_refreshed_at.should be_nil
 
       @topic.assignment = @course.assignments.build(:submission_types => 'discussion_topic', :title => @topic.title, :group_category => @group.group_category)
-      @topic.assignment.infer_due_at
+      @topic.assignment.infer_times
       @topic.assignment.saved_by = :discussion_topic
       @topic.save
       @topic.subtopics_refreshed_at.should_not be_nil
@@ -284,7 +284,7 @@ describe DiscussionTopic do
       @parent_topic = @course.discussion_topics.create(:title => "parent topic")
       @subtopic = @parent_topic.child_topics.build(:title => "subtopic")
       @assignment = @course.assignments.build(:submission_types => 'discussion_topic', :title => @subtopic.title, :group_category => group_category)
-      @assignment.infer_due_at
+      @assignment.infer_times
       @assignment.saved_by = :discussion_topic
       @subtopic.assignment = @assignment
       @subtopic.save
@@ -304,7 +304,7 @@ describe DiscussionTopic do
       course_with_student(:active_all => true)
       @topic = @course.discussion_topics.create(:title => "topic")
       @assignment = @course.assignments.build(:submission_types => 'discussion_topic', :title => @topic.title)
-      @assignment.infer_due_at
+      @assignment.infer_times
       @assignment.saved_by = :discussion_topic
       @topic.assignment = @assignment
       @topic.save
@@ -318,7 +318,7 @@ describe DiscussionTopic do
       group_category = @course.group_categories.create(:name => "category")
       @topic = @course.discussion_topics.create(:title => "topic")
       @assignment = @course.assignments.build(:submission_types => 'discussion_topic', :title => @topic.title, :group_category => group_category)
-      @assignment.infer_due_at
+      @assignment.infer_times
       @assignment.saved_by = :discussion_topic
       @topic.assignment = @assignment
       @topic.save
@@ -350,7 +350,7 @@ describe DiscussionTopic do
 
       group_category = @course.group_categories.build(:name => "category")
       @topic.assignment = @course.assignments.build(:submission_types => 'discussion_topic', :title => @topic.title, :group_category => group_category)
-      @topic.assignment.infer_due_at
+      @topic.assignment.infer_times
       @topic.assignment.saved_by = :discussion_topic
       @topic.save
       @topic.should be_for_assignment
@@ -361,7 +361,7 @@ describe DiscussionTopic do
       course_with_student(:active_all => true)
       @topic = @course.discussion_topics.build(:title => "topic")
       @assignment = @course.assignments.build(:submission_types => 'discussion_topic', :title => @topic.title)
-      @assignment.infer_due_at
+      @assignment.infer_times
       @assignment.saved_by = :discussion_topic
       @topic.assignment = @assignment
       @topic.save
@@ -521,7 +521,7 @@ describe DiscussionTopic do
       @entry1 = @topic.discussion_entries.create!(:message => "second message", :user => @user)
       @entry1.created_at = 1.week.ago
       @entry1.save!
-      @submission = @assignment.submissions.scoped(:conditions => {:user_id => @entry1.user_id}).first
+      @submission = @assignment.submissions.where(:user_id => @entry1.user_id).first
     end
 
     it "should not re-flag graded discussion as needs grading if student make another comment" do
@@ -655,7 +655,7 @@ describe DiscussionTopic do
       @student.reload
 
       @assignment.grade_student(@student, :grade => 1)
-      @submission = Submission.find(:first, :conditions => {:user_id => @student.id, :assignment_id => @assignment.id})
+      @submission = Submission.where(:user_id => @student, :assignment_id => @assignment).first
       @submission.workflow_state.should == 'graded'
 
       @topic.ensure_submission(@student)
@@ -798,6 +798,18 @@ describe DiscussionTopic do
       @assignment.reload.should be_deleted
       @topic.touch
       @assignment.reload.should be_deleted
+    end
+  end
+
+  context "restore" do
+    it "should restore the assignment and associated child topics" do
+      group_discussion_assignment
+      @topic.destroy
+
+      @topic.reload.assignment.expects(:restore).with(:discussion_topic).once
+      @topic.restore
+      @topic.reload.should be_active
+      @topic.child_topics.each { |ct| ct.reload.should be_active }
     end
   end
 

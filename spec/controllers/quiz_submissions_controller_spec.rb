@@ -46,6 +46,17 @@ describe QuizSubmissionsController do
       post 'create', :course_id => @quiz.context_id, :quiz_id => @quiz.id, :question_123 => 'hi'
       response.should be_redirect
     end
+
+    it "clears the access code key in user's session" do
+      student_in_course(:active_all => true)
+      user_session(@student)
+      @quiz.access_code = "Testing Testing 123"
+      @quiz.save!
+      access_code_key = @quiz.access_code_key_for_user(@student)
+      session[access_code_key] = true
+      post 'create', :course_id => @quiz.context_id, :quiz_id => @quiz.id, :question_123 => 'hi'
+      session.has_key?(access_code_key).should == false
+    end
   end
   
   describe "PUT 'update'" do
@@ -80,7 +91,7 @@ describe QuizSubmissionsController do
       course_with_student(:active_all => true)
       quiz_model(:course => @course)
       @qs = @quiz.generate_submission(@student, false)
-      QuizSubmission.update_all({ :updated_at => 1.hour.ago }, { :id => @qs.id })
+      QuizSubmission.where(:id => @qs).update_all(:updated_at => 1.hour.ago)
 
       put 'backup', :quiz_id => @quiz.id, :course_id => @course.id, :a => 'test'
       response.status.to_i.should == 401
@@ -92,7 +103,7 @@ describe QuizSubmissionsController do
       course_with_student_logged_in(:active_all => true)
       quiz_model(:course => @course)
       @qs = @quiz.generate_submission(@student, false)
-      QuizSubmission.update_all({ :updated_at => 1.hour.ago }, { :id => @qs.id })
+      QuizSubmission.where(:id => @qs).update_all(:updated_at => 1.hour.ago)
 
       put 'backup', :quiz_id => @quiz.id, :course_id => @course.id, :a => 'test'
       response.should be_success

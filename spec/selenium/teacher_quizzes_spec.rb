@@ -1,9 +1,25 @@
 require File.expand_path(File.dirname(__FILE__) + '/helpers/quizzes_common')
+require File.expand_path(File.dirname(__FILE__) + '/helpers/assignment_overrides.rb')
 
 describe "quizzes" do
+  include AssignmentOverridesSeleniumHelper
   it_should_behave_like "quizzes selenium tests"
 
   context "as a teacher" do
+    let(:due_at) { Time.zone.now }
+    let(:unlock_at) { Time.zone.now - 2.days }
+    let(:lock_at) { Time.zone.now + 4.days }
+
+    def create_quiz_with_default_due_dates
+      @context = @course
+      @quiz = quiz_model
+      @quiz.generate_quiz_data
+      @quiz.due_at = due_at
+      @quiz.lock_at = lock_at
+      @quiz.unlock_at = unlock_at
+      @quiz.save!
+      @quiz
+    end
 
     before (:each) do
       course_with_teacher_logged_in
@@ -12,19 +28,37 @@ describe "quizzes" do
       @course.reload
     end
 
+    it "should show a summary of due dates if there are multiple" do
+      create_quiz_with_default_due_dates
+      get "/courses/#{@course.id}/quizzes"
+      f('.quiz_list .description').should_not include_text "Multiple Dates"
+      add_due_date_override(@quiz)
+
+      get "/courses/#{@course.id}/quizzes"
+      f('.quiz_list .description').should include_text "Multiple Dates"
+      driver.mouse.move_to f('.quiz_list .description a')
+      wait_for_animations
+      tooltip = fj('.vdd_tooltip_content:visible')
+      tooltip.should include_text 'New Section'
+      tooltip.should include_text 'Everyone else'
+    end
+
     it "should allow a teacher to create a quiz from the quizzes tab directly" do
       get "/courses/#{@course.id}/quizzes"
       expect_new_page_load { f(".new-quiz-link").click }
-      submit_form("#quiz_options_form")
-      wait_for_ajax_requests
-      assert_flash_notice_message /Quiz data saved/
+      expect_new_page_load do
+        click_save_settings_button
+        wait_for_ajax_requests
+      end
+      f('#quiz_title').should include_text "Unnamed Quiz"
     end
 
     it "should create and preview a new quiz" do
       get "/courses/#{@course.id}/quizzes"
-      expect_new_page_load {
+      expect_new_page_load do
         f('.new-quiz-link').click
-      }
+        wait_for_ajaximations
+      end
       #check url
       driver.current_url.should match %r{/courses/\d+/quizzes/(\d+)\/edit}
       driver.current_url =~ %r{/courses/\d+/quizzes/(\d+)\/edit}
@@ -32,7 +66,7 @@ describe "quizzes" do
       quiz_id.should be > 0
 
       #input name and description then save quiz
-      replace_content(ff('#quiz_title')[1], 'new quiz')
+      replace_content(f('#quiz_title'), 'new quiz')
       test_text = "new description"
       keep_trying_until { f('#quiz_description_ifr').should be_displayed }
       type_in_tiny '#quiz_description', test_text
@@ -41,16 +75,20 @@ describe "quizzes" do
       end
 
       #add a question
-      f('.add_question_link').click
+      click_questions_tab
+      click_new_question_button
       submit_form('.question_form')
-      wait_for_ajax_requests
+      wait_for_ajaximations
 
       #save the quiz
-      submit_form("#quiz_options_form")
-      wait_for_ajax_requests
+      expect_new_page_load {
+        click_save_settings_button
+        wait_for_ajaximations
+      }
+      wait_for_ajaximations
 
       #check quiz preview
-      driver.find_element(:link, 'Preview the Quiz').click
+      f('#preview_quiz_button').click
       f('#questions').should be_present
     end
 
@@ -58,7 +96,8 @@ describe "quizzes" do
       get "/courses/#{@course.id}/quizzes/new"
 
       wait_for_tiny f('#quiz_description')
-      f(".add_question .add_question_link").click
+      click_questions_tab
+      click_new_question_button
       ff(".question_holder .question_form").length.should == 1
       f(".question_holder .question_form .cancel_link").click
       ff(".question_holder .question_form").length.should == 0
@@ -66,7 +105,8 @@ describe "quizzes" do
 
     it "should pop up calendar on top of #main" do
       get "/courses/#{@course.id}/quizzes/new"
-      f('#quiz_lock_at + .ui-datepicker-trigger').click
+      wait_for_ajaximations
+      fj('.due-date-row input:first + .ui-datepicker-trigger').click
       cal = f('#ui-datepicker-div')
       cal.should be_displayed
       cal.style('z-index').should > f('#main').style('z-index')
@@ -79,7 +119,7 @@ describe "quizzes" do
       q.save!
 
       get "/courses/#{@course.id}/quizzes/#{q.id}/edit"
-      wait_for_ajax_requests
+      wait_for_ajaximations
 
       test_text = "changed description"
       keep_trying_until { f('#quiz_description_ifr').should be_displayed }
@@ -87,45 +127,25 @@ describe "quizzes" do
       in_frame "quiz_description_ifr" do
         f('#tinymce').text.include?(test_text).should be_true
       end
-      submit_form("#quiz_options_form")
-      wait_for_ajax_requests
+      click_save_settings_button
+      wait_for_ajaximations
 
       get "/courses/#{@course.id}/quizzes/#{q.id}"
 
       f('#main .description').should include_text(test_text)
     end
 
-    it "message students who... should do something" do
+    it "should asynchronously load student quiz results" do
       @context = @course
       q = quiz_model
       q.generate_quiz_data
       q.save!
-      # add a student to the course
-      student = student_in_course(:active_enrollment => true).user
-      student.conversations.size.should == 0
 
       get "/courses/#{@course.id}/quizzes/#{q.id}"
-
-      driver.find_element(:partial_link_text, "Message Students Who...").click
-      dialog = ffj("#message_students_dialog:visible")
-      dialog.length.should == 1
-      dialog = dialog.first
-
-      click_option('.message_types', 'Have taken the quiz')
-      students = ffj(".student_list > .student:visible")
-
-      students.length.should == 0
-
-      click_option('.message_types', 'Have NOT taken the quiz')
-      students = ffj(".student_list > .student:visible")
-      students.length.should == 1
-
-      dialog.find_element(:css, 'textarea#body').send_keys('This is a test message.')
-
-      submit_dialog(dialog)
-      wait_for_ajax_requests
-
-      student.conversations.size.should == 1
+      f('.al-trigger').click
+      f('.quiz_details_link').click
+      wait_for_ajaximations
+      f('#quiz_details').should be_displayed
     end
 
     it "should not duplicate unpublished quizzes each time you open the publish multiple quizzes dialog" do
@@ -144,6 +164,7 @@ describe "quizzes" do
     it "should create a new question group" do
       get "/courses/#{@course.id}/quizzes/new"
 
+      click_questions_tab
       f('.add_question_group_link').click
       group_form = f('#questions .quiz_group_form')
       group_form.find_element(:name, 'quiz_group[name]').send_keys('new group')
@@ -156,26 +177,31 @@ describe "quizzes" do
     it "should update a question group" do
       get "/courses/#{@course.id}/quizzes/new"
 
+      click_questions_tab
       f('.add_question_group_link').click
       group_form = f('#questions .quiz_group_form')
       group_form.find_element(:name, 'quiz_group[name]').send_keys('new group')
       replace_content(group_form.find_element(:name, 'quiz_group[question_points]'), '3')
       submit_form(group_form)
       group_form.find_element(:css, '.group_display.name').should include_text('new group')
+      click_settings_tab
       keep_trying_until { f("#quiz_display_points_possible .points_possible").text.should == "3" }
 
+      click_questions_tab
       group_form.find_element(:css, '.edit_group_link').click
 
       group_form.find_element(:name, 'quiz_group[name]').send_keys('renamed')
       replace_content(group_form.find_element(:name, 'quiz_group[question_points]'), '2')
       submit_form(group_form)
       group_form.find_element(:css, '.group_display.name').should include_text('renamed')
+      click_settings_tab
       keep_trying_until { f("#quiz_display_points_possible .points_possible").text.should == "2" }
     end
 
     it "should not let you exceed the question limit" do
       get "/courses/#{@course.id}/quizzes/new"
 
+      click_questions_tab
       f('.add_question_group_link').click
       group_form = f('#questions .quiz_group_form')
       pick_count_field = group_form.find_element(:name, 'quiz_group[pick_count]')
@@ -192,11 +218,11 @@ describe "quizzes" do
       dismiss_alert
       pick_count_field.should have_attribute(:value, "1")
 
-      f('.add_question_link').click # 1 total, ok
+      click_new_question_button # 1 total, ok
       group_form.find_element(:css, '.edit_group_link').click
       pick_count.call('999') # 1000 total, ok
 
-      f('.add_question_link').click # 1001 total, bad
+      click_new_question_button # 1001 total, bad
       dismiss_alert
 
       pick_count.call('1000') # 1001 total, bad
@@ -224,8 +250,11 @@ describe "quizzes" do
 
     it "should flag a quiz question while taking a quiz as a teacher" do
       quiz_with_new_questions
-
-      expect_new_page_load { f('.publish_quiz_button').click }
+      expect_new_page_load do
+        click_save_settings_button
+        wait_for_ajax_requests
+      end
+      f('.publish_quiz_button').click
       wait_for_ajax_requests
 
       expect_new_page_load { driver.find_element(:link, 'Take the Quiz').click }
@@ -272,14 +301,14 @@ describe "quizzes" do
 
         input.click
         input.send_keys('asdf')
+        wait_for_ajaximations
         error_displayed?.should be_true
         input.send_keys(:tab)
-        keep_trying_until { !error_displayed? }
-        # gets cleared out since it's not valid
         input[:value].should be_blank
 
         input.click
         input.send_keys('1')
+        wait_for_ajaximations
         error_displayed?.should be_false
         input.send_keys(:tab)
         input.should have_attribute(:value, "1.0000")
@@ -474,18 +503,93 @@ describe "quizzes" do
       f('#content .question_name').should include_text("Question 1")
     end
 
+    it "should not display a link to quiz statistics for a MOOC" do
+      quiz_with_submission
+      @course.large_roster = true
+      @course.save!
+      get "/courses/#{@course.id}/quizzes/#{@quiz.id}"
+
+      f('#right-side').should_not include_text('Quiz Statistics')
+    end
+
     it "should delete a quiz" do
       quiz_with_submission
       get "/courses/#{@course.id}/quizzes/#{@quiz.id}"
-
       expect_new_page_load do
+        f('.al-trigger').click
         f('.delete_quiz_link').click
         accept_alert
       end
 
       # Confirm that we make it back to the quizzes index page
       f('#content').should include_text("Course Quizzes")
+      @quiz.reload.should be_deleted
+    end
+
+    it "creates assignment with default due date" do
+      get "/courses/#{@course.id}/quizzes/new"
+      wait_for_ajaximations
+      fill_assignment_overrides
+      replace_content(f('#quiz_title'), 'VDD Quiz')
+      expect_new_page_load do
+        click_save_settings_button
+        wait_for_ajax_requests
+      end
+      compare_assignment_times(Quiz.find_by_title('VDD Quiz'))
+    end
+
+    it "loads existing due date data into the form" do
+      @quiz = create_quiz_with_default_due_dates
+      get "/courses/#{@course.id}/quizzes/#{@quiz.id}/edit"
+      wait_for_ajaximations
+      compare_assignment_times(@quiz.reload)
+    end
+
+    it "can create overrides" do
+      @quiz = create_quiz_with_default_due_dates
+      default_section = @course.course_sections.first
+      other_section = @course.course_sections.create!(:name => "other section")
+      default_section_due = Time.zone.now + 1.days
+      other_section_due = Time.zone.now + 2.days
+      get "/courses/#{@course.id}/quizzes/#{@quiz.id}/edit"
+      wait_for_ajaximations
+      select_first_override_section(default_section.name)
+      first_due_at_element.clear
+      first_due_at_element.
+          send_keys(default_section_due.strftime('%b %-d, %y'))
+
+      add_override
+
+      select_last_override_section(other_section.name)
+      last_due_at_element.
+          send_keys(other_section_due.strftime('%b %-d, %y'))
+      expect_new_page_load do
+        click_save_settings_button
+        wait_for_ajax_requests
+      end
+      overrides = @quiz.reload.assignment_overrides
+      overrides.size.should == 2
+      default_override = overrides.detect { |o| o.set_id == default_section.id }
+      default_override.due_at.strftime('%b %-d, %y').
+          should == default_section_due.to_date.strftime('%b %-d, %y')
+      other_override = overrides.detect { |o| o.set_id == other_section.id }
+      other_override.due_at.strftime('%b %-d, %y').
+          should == other_section_due.to_date.strftime('%b %-d, %y')
+    end
+
+    it "should not show 'use for grading' as an option in rubrics" do
+      course_with_teacher_logged_in
+      @context = @course
+      q = quiz_model
+      q.generate_quiz_data
+      q.workflow_state = 'available'
+      q.save!
+      get "/courses/#{@course.id}/quizzes/#{@quiz.id}"
+      f('.al-trigger').click
+      f('.show_rubric_link').click
+      wait_for_ajaximations
+      fj('#rubrics .add_rubric_link:visible').click
+      fj('.rubric_grading:visible').should be_nil
     end
   end
 end
-

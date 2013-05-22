@@ -40,7 +40,7 @@ module DashboardHelper
 
   def show_welcome_message?
     @current_user.present? &&
-      @current_user.cached_current_enrollments(:include_enrollment_uuid => session[:enrollment_uuid]).empty?
+      @current_user.cached_current_enrollments(:include_enrollment_uuid => session[:enrollment_uuid]).select(&:active?).empty?
   end
 
   def welcome_message
@@ -72,6 +72,7 @@ module DashboardHelper
     end
 
     contexts.map do |name, url|
+      url = nil if category == 'Conversation'
       url.present? ? "<a href=\"#{url}\">#{h(name)}</a>" : h(name)
     end.to_sentence.html_safe
   end

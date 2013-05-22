@@ -49,7 +49,7 @@ describe "assignments" do
 
       f('.submit_assignment_link').click
       wait_for_ajaximations
-      driver.execute_script("return $('#submission_comment').height()").should == 14
+      driver.execute_script("return $('#submission_comment').height()").should == 20
       driver.execute_script("$('#submission_comment').focus()")
       wait_for_ajaximations
       driver.execute_script("return $('#submission_comment').height()").should == 72
@@ -63,6 +63,7 @@ describe "assignments" do
 
     it "should highlight mini-calendar dates where stuff is due" do
       get "/courses/#{@course.id}/assignments/syllabus"
+      wait_for_ajaximations
       f(".mini_calendar_day.date_#{@due_date.strftime("%m_%d_%Y")}").should have_class('has_event')
     end
 
@@ -96,7 +97,7 @@ describe "assignments" do
 
       get "/courses/#{@course.id}/assignments/#{@assignment.id}"
 
-      ffj('.formtable input[name="submission[group_comment]"]').size.should == 3
+      ffj('.formtable input[name="submission[group_comment]"]').size.should == 4
     end
 
     it "should not show assignments in an unpublished course" do
@@ -106,7 +107,7 @@ describe "assignments" do
       get "/courses/#{new_course.id}/assignments/#{assignment.id}"
 
       f('.ui-state-error').should be_displayed
-      f('#full_assignment_holder').should be_nil
+      f('#assignment_show').should be_nil
     end
 
     it "should verify student creatable group creation" do
@@ -149,7 +150,7 @@ describe "assignments" do
       get "/courses/#{@course.id}/assignments/#{@fourth_assignment.id}"
 
       driver.current_url.should match %r{/courses/\d+/discussion_topics/\d+}
-      f('h1.discussion-title').should include_text(@fourth_assignment.title)
+      f('div.discussion-title').should include_text(@fourth_assignment.title)
     end
 
     it "should validate an assignment created with the type of external tool" do
@@ -191,7 +192,6 @@ describe "assignments" do
         expected_unlock = datetime_string(@override.unlock_at).gsub(/\s+/, ' ')
         expected_lock_at = datetime_string(@override.lock_at).gsub(/\s+/, ' ')
         f('#content').should include_text "locked until #{expected_unlock}."
-        f('#sidebar_content').should include_text "only unlocked from #{expected_unlock} to #{expected_lock_at}"
       end
 
       it "should allow submission when within override locks" do
@@ -202,11 +202,15 @@ describe "assignments" do
 
         get "/courses/#{@course.id}/assignments/#{@assignment.id}"
         f('.submit_assignment_link').click
+        wait_for_ajaximations
         assignment_form = f('#submit_online_text_entry_form')
         wait_for_tiny(assignment_form)
+        wait_for_ajaximations
         expect {
           type_in_tiny('#submission_body', 'something to submit')
+          wait_for_ajaximations
           submit_form(assignment_form)
+          wait_for_ajaximations
         }.to change(Submission, :count).by(1)
       end
     end
@@ -217,8 +221,8 @@ describe "assignments" do
       end
 
       it "should validate file upload restrictions" do
-        filename_txt, fullpath_txt, data_txt = get_file("testfile4.txt")
-        filename_zip, fullpath_zip, data_zip = get_file("testfile5.zip")
+        filename_txt, fullpath_txt, data_txt, tempfile_txt = get_file("testfile4.txt")
+        filename_zip, fullpath_zip, data_zip, tempfile_zip = get_file("testfile5.zip")
         @fourth_assignment.update_attributes(:submission_types => 'online_upload', :allowed_extensions => '.txt')
         get "/courses/#{@course.id}/assignments/#{@fourth_assignment.id}"
         f('.submit_assignment_link').click
@@ -280,7 +284,6 @@ describe "assignments" do
         expected_unlock = datetime_string(@override.unlock_at).gsub(/\s+/, ' ')
         expected_lock_at = datetime_string(@override.lock_at).gsub(/\s+/, ' ')
         f('#content').should include_text "locked until #{expected_unlock}."
-        f('#sidebar_content').should include_text "only unlocked from #{expected_unlock} to #{expected_lock_at}"
       end
 
       context "with multiple section enrollments in same course" do
@@ -292,7 +295,6 @@ describe "assignments" do
           expected_unlock = datetime_string(@override.unlock_at).gsub(/\s+/, ' ')
           expected_lock_at = datetime_string(@assignment.lock_at).gsub(/\s+/, ' ')   # later than section2
           f('#content').should include_text "locked until #{expected_unlock}."
-          f('#sidebar_content').should include_text "only unlocked from #{expected_unlock} to #{expected_lock_at}"
         end
       end
     end
@@ -310,7 +312,6 @@ describe "assignments" do
         expected_unlock = datetime_string(@override.unlock_at).gsub(/\s+/, ' ')
         expected_lock_at = datetime_string(@override.lock_at).gsub(/\s+/, ' ')
         f('#content').should include_text "locked until #{expected_unlock}."
-        f('#sidebar_content').should include_text "only unlocked from #{expected_unlock} to #{expected_lock_at}"
       end
 
       context "overridden lock_at" do
@@ -325,7 +326,6 @@ describe "assignments" do
           expected_unlock = datetime_string(@override.unlock_at).gsub(/\s+/, ' ')
           expected_lock_at = datetime_string(@override.lock_at).gsub(/\s+/, ' ')
           f('#content').should include_text "locked until #{expected_unlock}."
-          f('#sidebar_content').should include_text "only unlocked from #{expected_unlock} to #{expected_lock_at}"
         end
       end
     end

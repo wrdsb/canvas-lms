@@ -67,6 +67,8 @@ define([
   $.fn.formSubmit = function(options) {
     this.submit(function(event) {
       var $form = $(this); //this is to handle if bind to a template element, then it gets cloned the original this would not be the same as the this inside of here.
+       // disableWhileLoading might need to wrap this, so we don't want to modify the original
+      var onSubmit = options.onSubmit;
       if($form.data('submitting')) { return; }
       $form.data('trigger_event', event);
       $form.hideErrors();
@@ -103,17 +105,23 @@ define([
       }
 
       if (options.disableWhileLoading) {
-        var oldOnSubmit = options.onSubmit || function(){};
-        options.onSubmit = function(loadingPromise) {
+        var oldOnSubmit = onSubmit;
+        onSubmit = function(loadingPromise) {
+          if (options.disableWhileLoading === 'spin_on_success') {
+            // turn it into a false promise, i.e. never resolve
+            var origPromise = loadingPromise;
+            loadingPromise = $.Deferred();
+            origPromise.fail(function(){ loadingPromise.reject(); });
+          }
           $form.disableWhileLoading(loadingPromise);
-          oldOnSubmit.apply(this, arguments);
+          if (oldOnSubmit) oldOnSubmit.apply(this, arguments);
         }
       }
 
-      if (options.onSubmit) {
+      if (onSubmit) {
         var loadingPromise = $.Deferred(),
             oldHandlers = {};
-        options.onSubmit(loadingPromise, formData);
+        onSubmit(loadingPromise, formData);
         $.each(['success', 'error'], function(i, successOrError){
           oldHandlers[successOrError] = options[successOrError];
           options[successOrError] = function() {
@@ -161,6 +169,8 @@ define([
           needValidForm = false;
         }
         if ($formObj.parents("html").get(0) == $("html").get(0) && options.formErrors !== false) {
+          if ($.isFunction(options.errorFormatter))
+            data = options.errorFormatter(data.errors || data);
           $formObj.formErrors(data, options);
         } else if (needValidForm) {
           $.ajaxJSON.unhandledXHRs.push(request);
@@ -671,9 +681,7 @@ define([
           inputType = $input.attr('type');
       if ((inputType == "radio" || inputType == 'checkbox') && !$input.attr('checked')) return;
       var val = $input.val();
-      if ($input.hasClass('suggestion_title') && $input.attr('title') == val) {
-        val = "";
-      } else if ($input.hasClass('datetime_field_enabled')) {
+      if ($input.hasClass('datetime_field_enabled')) {
         var suggestText = $input.parent().children(".datetime_suggest").text();
         if (suggestText) val = suggestText;
       }
@@ -948,6 +956,7 @@ define([
     var highestTop = 0;
     var currentTop = $(document).scrollTop();
     var errorDetails = {};
+    $('#aria_alerts').empty();
     $.each(errors, function(name, msg) {
       var $obj = $form.find(":input[name='" + name + "'],:input[name*='[" + name + "]']").filter(":first");
       if(!$obj || $obj.length === 0 || name == "general") {
@@ -997,6 +1006,12 @@ define([
       }
       var $box = $template.clone(true).attr('id', '').css('zIndex', $obj.zIndex() + 1).appendTo("body");
       $box.find(".error_text").html(message);
+      // it'd be more semantic to make the error_box have a role=alert but that doesn't work everywhere
+      // http://blog.paciellogroup.com/2012/06/html5-accessibility-chops-aria-rolealert-browser-support/
+      // we also have to add aria_alerts to the layout itself, since creating
+      // it dynamically means VoiceOver won't read it
+      $('#aria_alerts').append($('<div/>').html(message));
+
       var offset = $obj.offset();
       var height = $box.outerHeight();
       var objLeftIndent = Math.round($obj.outerWidth() / 5);
@@ -1083,57 +1098,5 @@ define([
     }
     return this;
   };
-
-  // Shows a gray-colored text suggestion for the form object when it is
-  // blank, i.e. a date field would show DD-MM-YYYY until the user clicks on it.
-  // I may phase this out or rewrite it, I'm undecided.  It's not
-  // being used very much yet.
-  $.fn.formSuggestion = function() {
-    return this.each(function() {
-      var $this = $(this);
-      $this.focus(function(event) {
-        var $this = $(this),
-            title = $this.attr('title');
-        $this.addClass('suggestionFocus');
-        if(!title || title === "") { return; }
-        if($this.val() == title) {
-          $this.select();
-        }
-        $this.removeClass("form_text_hint");
-      }).blur(function(event) {
-        var $this = $(this),
-            title = $this.attr('title');
-        $this.removeClass('suggestionFocus');
-        if(!title || title === "") { return; }
-        if($this.val() === "") {
-          $this.val(title);
-        }
-        if($this.val() == title) {
-          $this.addClass("form_text_hint");
-        }
-      })
-      // Workaround a strage bug where the input would be selected then immediately unselected
-      // every other time you clicked on the input with its defaultValue being shown
-      .mouseup(false)
-      .change(function(event) {
-        var $this = $(this),
-            title;
-        if ( !$this.hasClass('suggestionFocus') && ( title = $(this).attr('title') ) ) {
-          $this.removeClass('suggestionFocus');
-          if ($this.val() === "") {
-            $this.val(title);
-          }
-          $this.toggleClass("form_text_hint", $this.val() == title);
-        }
-      }).addClass('suggestion_title');
-
-      var title = $this.attr('title'),
-          val   = $this.val();
-      if ( title && ( val === "" || val == title) ) {
-        $this.addClass("form_text_hint").val(title);
-      }
-    });
-  };
-  $.fn.formSuggestion.suggestions = [];
 
 });

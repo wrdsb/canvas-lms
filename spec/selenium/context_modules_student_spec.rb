@@ -102,6 +102,14 @@ describe "context_modules" do
       validate_context_module_status_text(1, @completed_text)
       validate_context_module_status_text(2, @completed_text)
     end
+    
+    it "should show progression in large_roster courses" do
+      @course.large_roster = true
+      @course.save!
+      go_to_modules
+      navigate_to_module_item(0, @assignment_1.title)
+      validate_context_module_status_text(0, @completed_text)
+    end
 
     it "should validate that a student can't get to a locked context module" do
       go_to_modules
@@ -110,6 +118,15 @@ describe "context_modules" do
       get "/courses/#{@course.id}/assignments/#{@assignment_2.id}"
       f('#content').should include_text("hasn't been unlocked yet")
       f('#module_prerequisites_list').should be_displayed
+    end
+
+    it "should validate that a student can't get to an unpublished context module" do
+      @module_2.workflow_state = 'unpublished'
+      @module_2.save!
+
+      get "/courses/#{@course.id}/assignments/#{@assignment_2.id}"
+      f('#content').should include_text("is not available yet")
+      f('#module_prerequisites_list').should be_nil
     end
 
     it "should allow a student view student to progress through module content" do

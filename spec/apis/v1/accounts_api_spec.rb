@@ -22,46 +22,163 @@ describe "Accounts API", :type => :integration do
   before do
     Pseudonym.any_instance.stubs(:works_for_account?).returns(true)
     user_with_pseudonym(:active_all => true)
-    @a1 = account_model(:name => 'root')
+    @a1 = account_model(:name => 'root', :default_time_zone => 'UTC')
     @a1.add_user(@user)
-    @a2 = account_model(:name => 'subby', :parent_account => @a1, :root_account => @a1, :sis_source_id => 'sis1')
+    @a2 = account_model(:name => 'subby', :parent_account => @a1, :root_account => @a1, :sis_source_id => 'sis1', :default_time_zone => 'Alaska')
     @a2.add_user(@user)
     @a3 = account_model(:name => 'no-access')
     # even if we have access to it implicitly, it's not listed
     @a4 = account_model(:name => 'implicit-access', :parent_account => @a1, :root_account => @a1)
   end
 
-  it "should return the account list" do
-    json = api_call(:get, "/api/v1/accounts.json",
-                    { :controller => 'accounts', :action => 'index', :format => 'json' })
-    json.sort_by { |a| a['id'] }.should == [
-      {
-        'id' => @a1.id,
-        'name' => 'root',
-        'root_account_id' => nil,
-        'parent_account_id' => nil
-      },
-      {
-        'id' => @a2.id,
-        'name' => 'subby',
-        'root_account_id' => @a1.id,
-        'parent_account_id' => @a1.id,
-        'sis_account_id' => 'sis1',
-      },
-    ]
+  describe 'index' do
+    it "should return the account list" do
+      json = api_call(:get, "/api/v1/accounts.json",
+                      { :controller => 'accounts', :action => 'index', :format => 'json' })
+      json.sort_by { |a| a['id'] }.should == [
+        {
+          'id' => @a1.id,
+          'name' => 'root',
+          'root_account_id' => nil,
+          'parent_account_id' => nil,
+          'default_time_zone' => 'UTC'
+        },
+        {
+          'id' => @a2.id,
+          'name' => 'subby',
+          'root_account_id' => @a1.id,
+          'parent_account_id' => @a1.id,
+          'sis_account_id' => 'sis1',
+          'default_time_zone' => 'Alaska'
+        },
+      ]
+    end
   end
 
-  it "should return an individual account" do
-    # by id
-    json = api_call(:get, "/api/v1/accounts/#{@a1.id}",
-                    { :controller => 'accounts', :action => 'show', :id => @a1.to_param, :format => 'json' })
-    json.should ==
+  describe 'sub_accounts' do
+    before do
+      root = @a1
+      a1 = root.sub_accounts.create! :name => "Account 1"
+      a2 = root.sub_accounts.create! :name => "Account 2"
+      a1.sub_accounts.create! :name => "Account 1.1"
+      a1_2 = a1.sub_accounts.create! :name => "Account 1.2"
+      a1.sub_accounts.create! :name => "Account 1.2.1"
+      3.times.each { |i|
+        a2.sub_accounts.create! :name => "Account 2.#{i+1}"
+      }
+    end
+
+    it "should return child accounts" do
+      json = api_call(:get,
+        "/api/v1/accounts/#{@a1.id}/sub_accounts",
+        {:controller => 'accounts', :action => 'sub_accounts',
+         :account_id => @a1.id.to_s, :format => 'json'})
+      json.map { |j| j['name'] }.should == ['subby', 'implicit-access',
+        'Account 1', 'Account 2']
+    end
+
+    it "should return sub accounts recursively" do
+      json = api_call(:get,
+        "/api/v1/accounts/#{@a1.id}/sub_accounts?recursive=1",
+        {:controller => 'accounts', :action => 'sub_accounts',
+         :account_id => @a1.id.to_s, :recursive => "1", :format => 'json'})
+
+      json.map { |j| j['name'] }.sort.should == ['subby', 'implicit-access',
+        'Account 1', 'Account 1.1', 'Account 1.2', 'Account 1.2.1',
+        'Account 2', 'Account 2.1', 'Account 2.2', 'Account 2.3'].sort
+    end
+  end
+  
+  describe 'show' do
+    it "should return an individual account" do
+      # by id
+      json = api_call(:get, "/api/v1/accounts/#{@a1.id}",
+                      { :controller => 'accounts', :action => 'show', :id => @a1.to_param, :format => 'json' })
+      json.should ==
+        {
+          'id' => @a1.id,
+          'name' => 'root',
+          'root_account_id' => nil,
+          'parent_account_id' => nil,
+          'default_time_zone' => 'UTC'
+        }
+    end
+  end
+
+
+  it "should update the name for an account" do
+    new_name = 'root2'
+    json = api_call(:put, "/api/v1/accounts/#{@a1.id}",
+                    { :controller => 'accounts', :action => 'update', :id => @a1.to_param, :format => 'json' },
+                    { :account => {:name => new_name} })
+    expected =
+        {
+            'id' => @a1.id,
+            'name' => new_name
+        }
+
+    (expected.to_a - json.to_a).should be_empty
+
+    @a1.reload
+    @a1.name.should == new_name
+  end
+
+  it "should not update with a blank name" do
+    @a1.name = "blah"
+    @a1.save!
+    json = api_call(:put, "/api/v1/accounts/#{@a1.id}",
+      { :controller => 'accounts', :action => 'update', :id => @a1.to_param, :format => 'json' },
+      { :account => {:name => ""} }, {}, :expected_status => 400)
+
+    json["errors"]["name"].first["message"].should == "The account name cannot be blank"
+
+    json = api_call(:put, "/api/v1/accounts/#{@a1.id}",
+      { :controller => 'accounts', :action => 'update', :id => @a1.to_param, :format => 'json' },
+      { :account => {:name => nil} }, {}, :expected_status => 400)
+
+    json["errors"]["name"].first["message"].should == "The account name cannot be blank"
+
+    @a1.reload
+    @a1.name.should == "blah"
+  end
+
+  it "should update the default_time_zone for an account" do
+    new_zone = 'Alaska'
+    json = api_call(:put, "/api/v1/accounts/#{@a1.id}",
+                    { :controller => 'accounts', :action => 'update', :id => @a1.to_param, :format => 'json' },
+                    { :account => {:default_time_zone => new_zone} })
+    expected =
+        {
+            'id' => @a1.id,
+            'default_time_zone' => new_zone
+        }
+    (expected.to_a - json.to_a).should be_empty
+
+    @a1.reload
+    @a1.default_time_zone.should == new_zone
+  end
+  
+  it "should check for a valid time zone" do
+    json = api_call(:put, "/api/v1/accounts/#{@a1.id}",
+             { :controller => 'accounts', :action => 'update', :id => @a1.to_param, :format => 'json' },
+             { :account => {:name => '', :default_time_zone => 'Booger'} }, {}, { :expected_status => 400 })
+    json["errors"]["default_time_zone"].first["message"].should == "'Booger' is not a recognized time zone"
+  end
+
+  it "should not update other attributes (yet)" do
+    json = api_call(:put, "/api/v1/accounts/#{@a1.id}",
+                    { :controller => 'accounts', :action => 'update', :id => @a1.to_param, :format => 'json' },
+                    { :account => {:settings => {:setting => 'set'}}} )
+
+    expected =
       {
         'id' => @a1.id,
-        'name' => 'root',
-        'root_account_id' => nil,
-        'parent_account_id' => nil
+        'name' => @a1.name
       }
+
+    (expected.to_a - json.to_a).should be_empty
+    @a1.reload
+    @a1.settings.should be_empty
   end
 
   it "should find accounts by sis in only this root account" do
@@ -324,5 +441,30 @@ describe "Accounts API", :type => :integration do
     Setting.set('api_max_per_page', '5')
     api_call(:get, "/api/v1/accounts/#{@a1.id}/courses?per_page=12", :controller => "accounts", :action => "courses_api", :account_id => @a1.to_param, :format => 'json', :per_page => '12').size.should == 5
   end
-end
 
+  context "account api extension" do
+    module MockPlugin
+      def self.extend_account_json(hash, account, user, session, includes)
+        hash[:extra_thing] = "something"
+      end
+    end
+
+    module BadMockPlugin
+      def self.not_the_right_method
+      end
+    end
+
+    include Api::V1::Account
+
+    it "should allow a plugin to extend the account_json method" do
+      Api::V1::Account.register_extension(BadMockPlugin).should be_false
+      Api::V1::Account.register_extension(MockPlugin).should be_true
+
+      begin
+        account_json(@a1, @me, @session, [])[:extra_thing].should == "something"
+      ensure
+        Api::V1::Account.deregister_extension(MockPlugin)
+      end
+    end
+  end
+end
