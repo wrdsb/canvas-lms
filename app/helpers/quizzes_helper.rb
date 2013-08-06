@@ -78,11 +78,12 @@ module QuizzesHelper
     end
   end
 
-  def submitted_students_title(quiz, students)
+  def submitted_students_title(quiz, students, logged_out)
+    length = students.length + logged_out.length
     if quiz.survey?
-      submitted_students_survey_title(students.length)
+      submitted_students_survey_title(length)
     else
-      submitted_students_quiz_title(students.length)
+      submitted_students_quiz_title(length)
     end
   end
 
@@ -412,6 +413,16 @@ module QuizzesHelper
     quiz.survey? ?
       t('#quizzes.links.resume_survey', 'Resume Survey') :
       t('#quizzes.links.resume_quiz', 'Resume Quiz')
+  end
+
+  def attachment_id_for(question)
+    attach = attachment_for(question)
+    attach[:id] if attach.present?
+  end
+
+  def attachment_for(question)
+    key = "question_#{question[:id]}"
+    @attachments[@stored_params[key].try(:first).to_i]
   end
 
   def score_to_keep_message(quiz=@quiz)

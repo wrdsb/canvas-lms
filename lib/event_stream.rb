@@ -23,6 +23,7 @@ class EventStream
   attr_config :table, :type => String
   attr_config :id_column, :type => String, :default => 'id'
   attr_config :record_type, :default => EventStream::Record
+  attr_config :time_to_live, :type => Fixnum, :default => 1.year
 
   def initialize(&blk)
     instance_exec(&blk) if blk
@@ -30,7 +31,11 @@ class EventStream
   end
 
   def database
-    @database ||= Canvas::Cassandra::Database.from_config(database_name)
+    Canvas::Cassandra::Database.from_config(database_name)
+  end
+
+  def available?
+    Canvas::Cassandra::Database.configured?(database_name)
   end
 
   def on_insert(&callback)
@@ -38,9 +43,11 @@ class EventStream
   end
 
   def insert(record)
-    database.batch do
-      database.insert_record(table, { id_column => record.id }, record.attributes)
-      run_callbacks(:insert, record)
+    if available?
+      execute(:insert, record)
+      record
+    else
+      nil
     end
   end
 
@@ -49,17 +56,19 @@ class EventStream
   end
 
   def update(record)
-    database.batch do
-      database.update_record(table, { id_column => record.id }, record.changes)
-      run_callbacks(:update, record)
+    if available?
+      execute(:update, record)
+      record
+    else
+      nil
     end
   end
 
   def fetch(ids)
     rows = []
-    if ids.present?
+    if available? && ids.present?
       database.execute(fetch_cql, ids).fetch do |row|
-        rows << record_type.from_attributes(row)
+        rows << record_type.from_attributes(row.to_hash)
       end
     end
     rows
@@ -71,7 +80,7 @@ class EventStream
     on_insert do |record|
       if entry = index.entry_proc.call(record)
         key = index.key_proc ? index.key_proc.call(entry) : entry
-        index.insert(record.id, key, record.created_at)
+        index.insert(record, key)
       end
     end
 
@@ -83,23 +92,51 @@ class EventStream
     index
   end
 
+  def operation_payload(operation, record)
+    if operation == :update
+      record.changes
+    else
+      record.attributes
+    end
+  end
+
+  def identifier
+    "#{database_name}.#{table}"
+  end
+
+  def ttl_seconds(record)
+    ((record.created_at + time_to_live) - Time.now).to_i
+  end
+
   private
 
   def fetch_cql
     "SELECT * FROM #{table} WHERE #{id_column} IN (?)"
   end
 
-  def callbacks_for(type)
+  def callbacks_for(operation)
     @callbacks ||= {}
-    @callbacks[type] ||= []
+    @callbacks[operation] ||= []
   end
 
-  def add_callback(type, callback)
-    callbacks_for(type) << callback
+  def execute(operation, record)
+    ttl_seconds = self.ttl_seconds(record)
+    return if ttl_seconds < 0
+
+    database.batch do
+      database.send(:"#{operation}_record", table, { id_column => record.id }, operation_payload(operation, record), ttl_seconds)
+      run_callbacks(operation, record)
+    end
+  rescue Exception => exception
+    EventStream::Failure.log!(operation, self, record, exception)
   end
 
-  def run_callbacks(type, record)
-    callbacks_for(type).each do |callback|
+  def add_callback(operation, callback)
+    callbacks_for(operation) << callback
+  end
+
+  def run_callbacks(operation, record)
+    callbacks_for(operation).each do |callback|
       instance_exec(record, &callback)
     end
   end

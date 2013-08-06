@@ -99,6 +99,10 @@ class Group < ActiveRecord::Base
       (self.group_category.restricted_self_signup? && self.has_common_section_with_user?(user)))
   end
 
+  def full?
+    group_category && group_category.group_limit && participating_users.size >= group_category.group_limit
+  end
+
   def free_association?(user)
     auto_accept? || allow_join_request? || allow_self_signup?(user)
   end
@@ -148,9 +152,9 @@ class Group < ActiveRecord::Base
     Group.find(ids)
   end
 
-  def self.not_in_group_sql_fragment(groups)
-    "AND NOT EXISTS (SELECT * FROM group_memberships gm
-                      WHERE gm.user_id = u.id AND
+  def self.not_in_group_sql_fragment(groups, prepend_and = true)
+    "#{"AND" if prepend_and} NOT EXISTS (SELECT * FROM group_memberships gm
+                      WHERE gm.user_id = users.id AND
                       gm.workflow_state != 'deleted' AND
                       gm.group_id IN (#{groups.map(&:id).join ','}))" unless groups.empty?
 
@@ -189,7 +193,10 @@ class Group < ActiveRecord::Base
     group_memberships.update_all(:workflow_state => 'deleted')
   end
 
+  Bookmarker = BookmarkedCollection::SimpleBookmarker.new(Group, :name, :id)
+
   scope :active, where("groups.workflow_state<>'deleted'")
+  scope :by_name, lambda { order(Bookmarker.order_by) }
 
   def full_name
     res = before_label(self.name) + " "
@@ -319,7 +326,9 @@ class Group < ActiveRecord::Base
     can :read_roster and
     can :send_messages and
     can :send_messages_all and
-    can :follow
+    can :follow and
+    can :view_unpublished_items and
+    can :view_hidden_items
 
     # if I am a member of this group and I can moderate_forum in the group's context
     # (makes it so group members cant edit each other's discussion entries)
@@ -355,7 +364,9 @@ class Group < ActiveRecord::Base
     can :post_to_forum and
     can :read and
     can :read_roster and
-    can :update
+    can :update and
+    can :view_unpublished_items and
+    can :view_hidden_items
 
     given { |user, session| self.context && self.context.grants_right?(user, session, :view_group_pages) }
     can :read and can :read_roster
@@ -373,6 +384,10 @@ class Group < ActiveRecord::Base
 
     given { |user| user && (self.group_category.try(:allows_multiple_memberships?) || allow_self_signup?(user)) }
     can :leave
+  end
+
+  def users_visible_to(user)
+    grants_rights?(user, :read) ? users : users.where("?", false)
   end
 
   # Helper needed by several permissions, use grants_right?(user, :participate)
@@ -419,7 +434,11 @@ class Group < ActiveRecord::Base
   end
 
   def quota
-    self.storage_quota || Setting.get_cached('group_default_quota', 50.megabytes.to_s).to_i
+    return self.storage_quota || self.account.default_group_storage_quota || self.class.default_storage_quota
+  end
+
+  def self.default_storage_quota
+    Setting.get_cached('group_default_quota', 50.megabytes.to_s).to_i
   end
 
   def storage_quota_mb
@@ -541,23 +560,5 @@ class Group < ActiveRecord::Base
 
   def associated_shards
     [Shard.default]
-  end
-
-  class Bookmarker
-    def self.bookmark_for(group)
-      group.id
-    end
-
-    def self.validate(bookmark)
-      bookmark.is_a?(Fixnum)
-    end
-
-    def self.restrict_scope(scope, pager)
-      if bookmark = pager.current_bookmark
-        comparison = (pager.include_bookmark ? 'groups.id >= ?' : 'groups.id > ?')
-        scope = scope.where(comparison, bookmark)
-      end
-      scope.order("groups.id ASC")
-    end
   end
 end

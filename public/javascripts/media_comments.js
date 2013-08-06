@@ -40,7 +40,8 @@ define([
   $.mediaComment.partnerData = function(params) {
     return JSON.stringify({
       context_code: $.mediaComment.contextCode(),
-      root_account_id: domainRootAccountId || (domainRootAccountId = Number($("#domain_root_account_id").text()))
+      root_account_id: domainRootAccountId || (domainRootAccountId = Number($("#domain_root_account_id").text())),
+      context_source: ENV.CONTEXT_ACTION_SOURCE
     });
   }
 
@@ -305,22 +306,6 @@ define([
         $("#video_record").html("Flash required for recording video.");
         swfobject.embedSWF("/media_record/KRecord.swf", "video_record", "400", "300", "9.0.0", false, recordVars, params);
 
-        // give all swfs integer positions in the DOM to avoid a chrome 21
-        // bug that makes the allow/deny buttons unclickable.
-        var swfs = $dialog.find('object');
-        for (var i=0,length=swfs.length; i < length; i++) {
-          var swf             = $(swfs[i]),
-              swfPosition     = swf.offset().left,
-              roundedPosition = Math.round(swfPosition);
-
-          if (swfPosition === roundedPosition) continue;
-
-          swf.css({
-            position: 'relative',
-            left: roundedPosition - swfPosition
-          });
-        }
-
         // give the dialog time to initialize or the recorder will
         // render funky in ie
       }, INST.browser.ie ? 500 : 10);
@@ -336,6 +321,8 @@ define([
         licenseType:"CC-0.1",
         maxFileSize: INST.kalturaSettings.max_file_size_bytes / 1048576,
         maxUploads: 1,
+        partnerData: $.mediaComment.partnerData(),
+        partner_data: $.mediaComment.partnerData(),
         uiConfId: INST.kalturaSettings.upload_ui_conf,
         jsDelegate: "$.mediaComment.audio_delegate"
       }

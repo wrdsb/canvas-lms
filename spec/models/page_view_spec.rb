@@ -57,20 +57,20 @@ describe PageView do
     describe "sharding" do
       specs_require_sharding
 
-      it "should always assign the default shard" do
-        PageView.new.shard.should == Shard.default
+      it "should always assign the birth shard" do
+        PageView.new.shard.should == Shard.birth
         pv = nil
         @shard1.activate do
           pv = page_view_model
-          pv.shard.should == Shard.default
+          pv.shard.should == Shard.birth
           pv.save!
           pv = PageView.find(pv.request_id)
           pv.should be_present
-          pv.shard.should == Shard.default
+          pv.shard.should == Shard.birth
         end
         pv = PageView.find(pv.request_id)
         pv.should be_present
-        pv.shard.should == Shard.default
+        pv.shard.should == Shard.birth
         pv.interaction_seconds = 25
         pv.save!
         pv = PageView.find(pv.request_id)
@@ -78,6 +78,7 @@ describe PageView do
         @shard2.settings[:page_view_method] = :cache
         @shard2.save
         @shard2.activate do
+          user
           pv = page_view_model
           pv.shard.should == @shard2
           pv.save!
@@ -97,7 +98,8 @@ describe PageView do
           Shard.default.save!
 
           @shard1.activate do
-            course_model
+            account = Account.create!
+            course_model(:account => account)
             pv = page_view_model
             pv.user = @user
             pv.context = @course
@@ -121,7 +123,8 @@ describe PageView do
         @pv_user = user_model
         id = @shard1.activate do
           @user2 = User.create! { |u| u.id = @user.local_id }
-          course_model
+          account = Account.create!
+          course_model(:account => account)
           pv = page_view_model
           pv.user = @pv_user
           pv.context = @course
@@ -141,6 +144,17 @@ describe PageView do
         @shard1.activate do
           @pv_user.page_views.paginate(:page => 1, :per_page => 1).first.should == pv
           @user2.page_views.paginate(:page => 1, :per_page => 1).should be_empty
+        end
+      end
+
+      it "should store and load from cassandra when the birth shard is not the default shard" do
+        Shard.stubs(:birth).returns(@shard1)
+        @shard2.activate do
+          expect {
+            @page_view.save!
+          }.to change { PageView::EventStream.database.execute("select count(*) from page_views").fetch_row["count"] }.by(1)
+          PageView.find(@page_view.id).should == @page_view
+          expect { PageView.find("junk") }.to raise_error(ActiveRecord::RecordNotFound)
         end
       end
     end
@@ -280,10 +294,11 @@ describe PageView do
     describe "batch transaction" do
       self.use_transactional_fixtures = false
       it "should not fail the batch if one row fails" do
+        user
         expect {
           PageView.transaction do
-            PageView.process_cache_queue_item('request_id' => '1234')
-            PageView.process_cache_queue_item('request_id' => '1234')
+            PageView.process_cache_queue_item('request_id' => '1234', 'user_id' => @user.id)
+            PageView.process_cache_queue_item('request_id' => '1234', 'user_id' => @user.id)
           end
         }.to change(PageView, :count).by(1)
       end
@@ -367,11 +382,11 @@ describe PageView do
     let(:params) { {'action' => 'path', 'controller' => 'some'} }
     let(:headers) { {'User-Agent' => 'Mozilla'} }
     let(:session) { {:id => 42} }
-    let(:request) { stub(:url => 'host.com/some/path', :path_parameters => params, :headers => headers, :session_options => session, :method => :get) }
+    let(:request) { stub(:url => (@url || 'host.com/some/path'), :path_parameters => params, :headers => headers, :session_options => session, :method => :get) }
     let(:user) { User.new }
     let(:attributes) { {:real_user => user, :user => user } }
 
-    before { RequestContextGenerator.stubs( :request_id => 9 ) }
+    before { RequestContextGenerator.stubs( :request_id => 'xyz' ) }
     after { RequestContextGenerator.unstub :request_id }
 
     subject { PageView.generate(request, attributes) }
@@ -387,6 +402,19 @@ describe PageView do
     its(:created_at) { should_not be_nil }
     its(:updated_at) { should_not be_nil }
     its(:http_method) { should == 'get' }
+
+    it "should filter sensitive url params" do
+      @url = 'http://canvas.example.com/api/v1/courses/1?access_token=SUPERSECRET'
+      pv = PageView.generate(request, attributes)
+      pv.url.should ==  'http://canvas.example.com/api/v1/courses/1?access_token=[FILTERED]'
+    end
+
+    it "should filter sensitive url params on the way out" do
+      pv = PageView.generate(request, attributes)
+      pv.update_attribute(:url, 'http://canvas.example.com/api/v1/courses/1?access_token=SUPERSECRET')
+      pv.reload
+      pv.url.should ==  'http://canvas.example.com/api/v1/courses/1?access_token=[FILTERED]'
+    end
   end
 
   describe ".for_request_id" do

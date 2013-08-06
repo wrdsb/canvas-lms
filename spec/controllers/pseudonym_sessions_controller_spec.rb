@@ -33,6 +33,7 @@ describe PseudonymSessionsController do
 
     def confirm_mobile_layout
       mobile_agents.each do |agent|
+        controller.js_env.clear
         request.env['HTTP_USER_AGENT'] = agent
         yield
         response.should render_template("pseudonym_sessions/mobile_login")
@@ -647,7 +648,7 @@ describe PseudonymSessionsController do
       controller.request.env['canvas.domain_root_account'] = account1
       get 'new', :ticket => 'ST-abcd'
       response.should redirect_to(dashboard_url(:login_success => 1))
-      session[:cas_login].should == true
+      session[:cas_session].should == 'ST-abcd'
       Pseudonym.find(session[:pseudonym_credentials_id]).should == user1.pseudonyms.first
 
       (controller.instance_variables.grep(/@[^_]/) - ['@mock_proxy']).each{ |var| controller.send :remove_instance_variable, var }
@@ -658,7 +659,7 @@ describe PseudonymSessionsController do
       controller.request.env['canvas.domain_root_account'] = account2
       get 'new', :ticket => 'ST-efgh'
       response.should redirect_to(dashboard_url(:login_success => 1))
-      session[:cas_login].should == true
+      session[:cas_session].should == 'ST-efgh'
       Pseudonym.find(session[:pseudonym_credentials_id]).should == user2.pseudonyms.first
     end
   end
@@ -770,7 +771,7 @@ describe PseudonymSessionsController do
 
         @user.otp_secret_key = ROTP::Base32.random_base32
         @user.save!
-        user_session(@user)
+        user_session(@user, @pseudonym)
         session[:pending_otp] = true
       end
 
@@ -811,7 +812,7 @@ describe PseudonymSessionsController do
 
     context "enrollment" do
       before do
-        user_session(@user)
+        user_session(@user, @pseudonym)
       end
 
       it "should generate a secret key" do

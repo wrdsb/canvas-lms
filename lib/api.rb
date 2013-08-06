@@ -59,6 +59,8 @@ module Api
     unless columns.empty?
       find_params = sis_make_params_for_sis_mapping_and_columns(columns, sis_mapping, root_account)
       return result if find_params == :not_found
+      # pluck ignores include
+      find_params[:joins] = find_params.delete(:include) if find_params[:include]
       result.concat collection.scoped(find_params).pluck(:id)
       result.uniq!
     end
@@ -89,7 +91,11 @@ module Api
         :scope => 'root_account_id' },
   }.freeze
 
-  ID_REGEX = %r{\A\d+\z}
+  # (digits in 2**63-1) - 1, so that any ID representable in MAX_ID_LENGTH
+  # digits is < 2**63, which is the max signed 64-bit integer, which is what's
+  # used for the DB ids.
+  MAX_ID_LENGTH = 18
+  ID_REGEX = %r{\A\d{1,#{MAX_ID_LENGTH}}\z}
 
   def self.sis_parse_id(id, lookups)
     # returns column_name, column_value
@@ -246,13 +252,31 @@ module Api
     }
   end
 
-  # See User.submissions_for_given_assignments and SubmissionsApiController#for_students
-  mattr_accessor :assignment_ids_for_students_api
-
   # a hash of allowed html attributes that represent urls, like { 'a' => ['href'], 'img' => ['src'] }
   UrlAttributes = Instructure::SanitizeField::SANITIZE[:protocols].inject({}) { |h,(k,v)| h[k] = v.keys; h }
 
-  def api_user_content(html, context = @context, user = @current_user)
+  def api_bulk_load_user_content_attachments(htmls, context = @context, user = @current_user)
+    rewriter = UserContent::HtmlRewriter.new(context, user)
+    attachment_ids = []
+    rewriter.set_handler('files') do |m|
+      attachment_ids << m.obj_id if m.obj_id
+    end
+
+    htmls.each { |html| rewriter.translate_content(html) }
+
+    if attachment_ids.blank?
+      {}
+    else
+      attachments = if context.is_a?(User) || context.nil?
+                      Attachment.where(id: attachment_ids)
+                    else
+                      context.attachments.where(id: attachment_ids)
+                    end
+      attachments.index_by(&:id)
+    end
+  end
+
+  def api_user_content(html, context = @context, user = @current_user, preloaded_attachments = {})
     return html if html.blank?
 
     # if we're a controller, use the host of the request, otherwise let HostUrl
@@ -268,11 +292,12 @@ module Api
     rewriter = UserContent::HtmlRewriter.new(context, user)
     rewriter.set_handler('files') do |match|
       if match.obj_id
-        if match.obj_class == Attachment && context && !context.is_a?(User)
-          obj = context.attachments.find(match.obj_id) rescue nil
-        else
-          obj = match.obj_class.find_by_id(match.obj_id)
-        end
+        obj   = preloaded_attachments[match.obj_id]
+        obj ||= if context.is_a?(User) || context.nil?
+                  Attachment.find_by_id(match.obj_id)
+                else
+                  context.attachments.find_by_id(match.obj_id)
+                end
       end
       next unless obj && rewriter.user_can_view_content?(obj)
 
@@ -294,7 +319,7 @@ module Api
     # translate media comments into html5 video tags
     doc = Nokogiri::HTML::DocumentFragment.parse(html)
     doc.css('a.instructure_inline_media_comment').each do |anchor|
-      media_id = anchor['id'].try(:gsub, /^media_comment_/, '')
+      media_id = anchor['id'].try(:sub, /^media_comment_/, '')
       next if media_id.blank?
 
       if anchor['class'].try(:match, /\baudio_comment\b/)
@@ -356,15 +381,18 @@ module Api
 
   # This removes the verifier parameters that are added to attachment links by api_user_content
   # and adds context (e.g. /courses/:id/) if it is missing
+  # exception: it leaves user-context file links alone
   def process_incoming_html_content(html)
-    return html unless html.present? &&
-      (html.include?("verifier=") || html.include?("'/files") || html.include?("\"/files"))
+    return html unless html.present?
+    # shortcut html documents that definitely don't have anything we're interested in
+    return html unless html =~ %r{verifier=|['"]/files|instructure_inline_media_comment}
 
     attrs = ['href', 'src']
     link_regex = %r{/files/(\d+)/(?:download|preview)}
     verifier_regex = %r{(\?)verifier=[^&]*&?|&verifier=[^&]*}
 
-    context_types = ["Course", "Group", "Account", "User"]
+    context_types = ["Course", "Group", "Account"]
+    skip_context_types = ["User"]
 
     doc = Nokogiri::HTML(html)
     doc.search("*").each do |node|
@@ -373,8 +401,12 @@ module Api
           if link =~ link_regex
             if link.start_with?('/files')
               att_id = $1
-              if (att = Attachment.find_by_id(att_id)) && context_types.include?(att.context_type)
-                link = "/#{att.context_type.underscore.pluralize}/#{att.context_id}" + link
+              att = Attachment.find_by_id(att_id)
+              if att
+                next if skip_context_types.include?(att.context_type)
+                if context_types.include?(att.context_type)
+                  link = "/#{att.context_type.underscore.pluralize}/#{att.context_id}" + link
+                end
               end
             end
             if link.include?('verifier=')
@@ -384,6 +416,33 @@ module Api
           end
         end
       end
+    end
+
+    # translate audio and video tags generated by media comments back into anchor tags
+    # try to add the relevant attributes to media comment anchor tags to retain MediaObject info
+    doc.css('audio.instructure_inline_media_comment, video.instructure_inline_media_comment, a.instructure_inline_media_comment').each do |node|
+      if node.name == 'a'
+        media_id = node['id'].try(:sub, /^media_comment_/, '')
+      else
+        media_id = node['data-media_comment_id']
+      end
+      next if media_id.blank?
+
+      if node.name == 'a'
+        anchor = node
+        unless anchor['class'] =~ /\b(audio|video)_comment\b/
+          media_object = MediaObject.active.by_media_id(media_id).first
+          anchor['class'] += " #{media_object.media_type}_comment" if media_object
+        end
+      else
+        comment_type = "#{node.name}_comment"
+        anchor = Nokogiri::XML::Node.new('a', doc)
+        anchor['class'] = "instructure_inline_media_comment #{comment_type}"
+        anchor['id'] = "media_comment_#{media_id}"
+        node.replace(anchor)
+      end
+
+      anchor['href'] = "/media_objects/#{media_id}"
     end
 
     return doc.at_css('body').inner_html
@@ -441,6 +500,15 @@ module Api
       %r{^/groups/#{ID}/files/(#{ID})/} => ['File', :api_v1_attachment_url, :id],
       %r{^/users/#{ID}/files/(#{ID})/} => ['File', :api_v1_attachment_url, :id],
       %r{^/files/(#{ID})/} => ['File', :api_v1_attachment_url, :id],
+
+      # List quizzes
+      %r{^/courses/(#{ID})/quizzes$} => ['[Quiz]', :api_v1_course_quizzes_url, :course_id],
+
+      # Get quiz
+      %r{^/courses/(#{ID})/quizzes/(#{ID})$} => ['Quiz', :api_v1_course_quiz_url, :course_id, :id],
+
+      # Launch LTI tool
+      %r{^/courses/(#{ID})/external_tools/retrieve\?url=(.*)$} => ['SessionlessLaunchUrl', :api_v1_course_external_tool_sessionless_launch_url, :course_id, :url],
   }.freeze
 
   def api_endpoint_info(protocol, host, url)

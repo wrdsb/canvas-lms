@@ -1,5 +1,7 @@
 # This class both creates the slickgrid instance, and acts as the data source for that instance.
 define [
+  'compiled/gradebook2/TotalColumnHeaderView'
+  'compiled/util/round'
   'compiled/views/InputFilterView'
   'i18n!gradebook2'
   'compiled/gradebook2/GRADEBOOK_TRANSLATIONS'
@@ -31,7 +33,7 @@ define [
   'jqueryui/sortable'
   'compiled/jquery.kylemenu'
   'compiled/jquery/fixDialogButtons'
-], (InputFilterView, I18n, GRADEBOOK_TRANSLATIONS, $, _, GradeCalculator, userSettings, Spinner, MultiGrid, SubmissionDetailsDialog, AssignmentGroupWeightsDialog, SubmissionCell, GradebookHeaderMenu, htmlEscape, gradebook_uploads_form, sectionToShowMenuTemplate, columnHeaderTemplate, groupTotalCellTemplate, rowStudentNameTemplate) ->
+], (TotalColumnHeaderView, round, InputFilterView, I18n, GRADEBOOK_TRANSLATIONS, $, _, GradeCalculator, userSettings, Spinner, MultiGrid, SubmissionDetailsDialog, AssignmentGroupWeightsDialog, SubmissionCell, GradebookHeaderMenu, htmlEscape, gradebook_uploads_form, sectionToShowMenuTemplate, columnHeaderTemplate, groupTotalCellTemplate, rowStudentNameTemplate) ->
 
   class Gradebook
     columnWidths =
@@ -47,11 +49,12 @@ define [
         min: 85
         max: 100
 
+    DISPLAY_PRECISION = 2
+
     constructor: (@options) ->
       @chunk_start = 0
       @students = {}
       @rows = []
-      @sortFn = (student) -> student.sortable_name
       @assignmentsToHide = userSettings.contextGet('hidden_columns') || []
       @sectionToShow = userSettings.contextGet 'grading_show_only_section'
       @show_attendance = userSettings.contextGet 'show_attendance'
@@ -262,7 +265,6 @@ define [
     # a full redraw
     buildRows: =>
       @rows.length = 0
-      sortables = {}
 
       for id, column of @gradeGrid.getColumns() when ''+column.object?.submission_types is "attendance"
         column.unselectable = !@show_attendance
@@ -274,12 +276,11 @@ define [
         if @rowFilter(student)
           @rows.push(student)
           @calculateStudentGrade(student)
-          sortables[student.id] = @sortFn(student)
 
       @rows.sort (a, b) ->
-        if sortables[a.id] < sortables[b.id] then -1
-        else if sortables[a.id] > sortables[b.id] then 1
-        else 0
+        a.sortable_name.localeCompare(b.sortable_name,
+          window.I18n.locale,
+          { sensitivity: 'accent', ignorePunctuation: true, numeric: true})
 
       student.row = i for student, i in @rows
       @multiGrid.invalidate()
@@ -367,13 +368,14 @@ define [
         letterGrade = GradeCalculator.letter_grade(@options.grading_standard, percentage)
 
       templateOpts =
-        score: val.score
-        possible: val.possible
+        score: round(val.score, DISPLAY_PRECISION)
+        possible: round(val.possible, DISPLAY_PRECISION)
         letterGrade: letterGrade
         percentage: percentage
       if columnDef.type == 'total_grade'
         templateOpts.warning = @totalGradeWarning
         templateOpts.lastColumn = true
+        templateOpts.showPointsNotPercent = @showPointTotals
 
       groupTotalCellTemplate templateOpts
 
@@ -425,7 +427,7 @@ define [
         $notAssignments.data('sortable-item', null)
       )()
       (initHeaderDropMenus = =>
-        $headers.find('.gradebook-header-drop').click (event) =>
+        $headers.find('.assignment_header_drop').click (event) =>
           $link = $(event.target)
           unless $link.data('gradebookHeaderMenu')
             $link.data('gradebookHeaderMenu', new GradebookHeaderMenu(@assignments[$link.data('assignmentId')], $link, this))
@@ -563,6 +565,7 @@ define [
             @minimizeColumn($columnHeader) unless columnDef.minimized
           else if columnDef.minimized
             @unminimizeColumn($columnHeader)
+
       $(document).trigger('gridready')
 
     initHeader: =>
@@ -640,6 +643,27 @@ define [
 
       @userFilter = new InputFilterView el: '.gradebook_filter input'
       @userFilter.on 'input', @onUserFilterInput
+
+      @showPointTotals = @setPointTotals userSettings.contextGet('show_point_totals')
+      totalHeader = new TotalColumnHeaderView
+        showingPoints: => @showPointTotals
+        toggleShowingPoints: @togglePointsOrPercentTotals.bind(this)
+        weightedGroups: @weightedGroups.bind(this)
+      totalHeader.render()
+
+    weightedGroups: ->
+      @options.group_weighting_scheme == "percent"
+
+    setPointTotals: (showPoints) ->
+      @showPointTotals = if @weightedGroups()
+        false
+      else
+        showPoints
+
+    togglePointsOrPercentTotals: ->
+      @setPointTotals(not @showPointTotals)
+      userSettings.contextSet('show_point_totals', @showPointTotals)
+      @gradeGrid.invalidate()
 
     onUserFilterInput: (term) =>
       # put rows back on the students for dropped assignments
@@ -774,11 +798,16 @@ define [
           type: 'assignment_group'
         }
 
+      total = I18n.t "total", "Total"
       @aggregateColumns.push
         id: "total_grade"
         field: "total_grade"
         formatter: @groupTotalFormatter
-        name: "Total"
+        name: """
+          #{total}
+          <div id=total_column_header></div>
+        """
+        toolTip: total
         minWidth: columnWidths.total.min
         maxWidth: columnWidths.total.max
         width: testWidth("Total", columnWidths.total.min, columnWidths.total.max)
@@ -850,7 +879,7 @@ define [
 
     # show warnings for bad grading setups
     setAssignmentWarnings: =>
-      if @options.group_weighting_scheme == "percent"
+      if @weightedGroups()
         # assignment group has 0 points possible
         invalidAssignmentGroups = _.filter @assignmentGroups, (ag) ->
           pointsPossible = _.inject ag.assignments

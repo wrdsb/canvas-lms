@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 Instructure, Inc.
+# Copyright (C) 2011-2013 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -17,7 +17,7 @@
 #
 
 class PseudonymSessionsController < ApplicationController
-  protect_from_forgery :except => [:create, :destroy, :saml_consume, :oauth2_token, :oauth2_logout]
+  protect_from_forgery :except => [:create, :destroy, :saml_consume, :oauth2_token, :oauth2_logout, :cas_logout]
   before_filter :forbid_on_files_domain, :except => [ :clear_file_session ]
   before_filter :require_password_session, :only => [ :otp_login, :disable_otp_login ]
   before_filter :require_user, :only => [ :otp_login ]
@@ -66,7 +66,8 @@ class PseudonymSessionsController < ApplicationController
           if @pseudonym
             # Successful login and we have a user
             @domain_root_account.pseudonym_sessions.create!(@pseudonym, false)
-            session[:cas_login] = true
+            session[:cas_session] = params[:ticket]
+            @pseudonym.claim_cas_ticket(params[:ticket])
             @user = @pseudonym.login_assertions_for_user
 
             successful_login(@user, @pseudonym)
@@ -114,15 +115,15 @@ class PseudonymSessionsController < ApplicationController
   end
 
   def maybe_render_mobile_login(status = nil)
-    if params[:mobile] || request.user_agent.to_s =~ /ipod|iphone|ipad|Android/i
+    if mobile_device?
       @login_handle_name = @domain_root_account.login_handle_name rescue AccountAuthorizationConfig.default_login_handle_name
       @login_handle_is_email = @login_handle_name == AccountAuthorizationConfig.default_login_handle_name
-      @shared_js_vars = {
+      js_env(
         :GOOGLE_ANALYTICS_KEY => Setting.get_cached('google_analytics_key', nil),
         :RESET_SENT =>  t("password_confirmation_sent", "Password confirmation sent. Make sure you check your spam box."),
         :RESET_ERROR =>  t("password_confirmation_error", "Error sending request.")
-      }
-      render :template => 'pseudonym_sessions/mobile_login', :layout => false, :status => status
+      )
+      render :template => 'pseudonym_sessions/mobile_login', :layout => 'mobile_auth', :status => status
     else
       @request = request
       render :action => 'new', :status => status
@@ -192,7 +193,6 @@ class PseudonymSessionsController < ApplicationController
   def destroy
     # the saml message has to survive a couple redirects and reset_session calls
     message = session[:delegated_message]
-    @pseudonym_session.destroy rescue true
 
     if @domain_root_account.saml_authentication? and session[:saml_unique_id]
       # logout at the saml identity provider
@@ -209,21 +209,21 @@ class PseudonymSessionsController < ApplicationController
           aac.debug_set(:debugging, t('debug.logout_redirect', "LogoutRequest sent to IdP"))
         end
 
-        reset_session
+        logout_current_user
         session[:delegated_message] = message if message
         redirect_to(forward_url)
         return
       else
-        reset_session
+        logout_current_user
         flash[:message] = t('errors.logout_errors.no_idp_found', "Canvas was unable to log you out at your identity provider")
       end
-    elsif @domain_root_account.cas_authentication? and session[:cas_login]
-      reset_session
+    elsif @domain_root_account.cas_authentication? and session[:cas_session]
+      logout_current_user
       session[:delegated_message] = message if message
       redirect_to(cas_client.logout_url(cas_login_url))
       return
     else
-      reset_session
+      logout_current_user
       flash[:delegated_message] = message if message
     end
 
@@ -237,6 +237,19 @@ class PseudonymSessionsController < ApplicationController
       end
       format.json { render :json => "OK".to_json, :status => :ok }
     end
+  end
+
+  def cas_logout
+    if !Canvas.redis_enabled?
+      # NOT SUPPORTED without redis
+      return render :text => "NOT SUPPORTED", :status => :method_not_allowed
+    elsif params['logoutRequest'] &&
+        params['logoutRequest'] =~ %r{^<samlp:LogoutRequest.*?<samlp:SessionIndex>(.*)</samlp:SessionIndex>}m
+      # we *could* validate the timestamp here, but the whole request is easily spoofed anyway, so there's no
+      # point. all the security is in the ticket being secret and non-predictable
+      return render :text => "OK", :status => :ok if Pseudonym.release_cas_ticket($1)
+    end
+    render :text => "NO SESSION FOUND", :status => :not_found
   end
 
   def clear_file_session
@@ -260,8 +273,7 @@ class PseudonymSessionsController < ApplicationController
         aac = @domain_root_account.account_authorization_configs.find_by_idp_entity_id(response.issuer)
         if aac.nil?
           logger.error "Attempted SAML login for #{response.issuer} on account without that IdP"
-          @pseudonym_session.destroy rescue true
-          reset_session
+          destroy_session
           if @domain_root_account.auth_discovery_url
             message = t('errors.login_errors.unrecognized_idp', "Canvas did not recognize your identity provider")
             redirect_to @domain_root_account.auth_discovery_url + "?message=#{URI.escape message}"
@@ -364,21 +376,18 @@ class PseudonymSessionsController < ApplicationController
           aac.debug_set(:login_response_validation_error, response.validation_error)
         end
         logger.error "Failed to verify SAML signature."
-        @pseudonym_session.destroy rescue true
-        reset_session
+        destroy_session
         flash[:delegated_message] = login_error_message
         redirect_to login_url(:no_auto=>'true')
       end
     elsif !params[:SAMLResponse]
       logger.error "saml_consume request with no SAMLResponse parameter"
-      @pseudonym_session.destroy rescue true
-      reset_session
+      destroy_session
       flash[:delegated_message] = login_error_message
       redirect_to login_url(:no_auto=>'true')
     else
       logger.error "Attempted SAML login on non-SAML enabled account."
-      @pseudonym_session.destroy rescue true
-      reset_session
+      destroy_session
       flash[:delegated_message] = login_error_message
       redirect_to login_url(:no_auto=>'true')
     end
@@ -516,6 +525,7 @@ class PseudonymSessionsController < ApplicationController
   def successful_login(user, pseudonym, otp_passed = false)
     @current_user = user
     @current_pseudonym = pseudonym
+    Auditors::Authentication.record(@current_pseudonym, 'login')
 
     otp_passed ||= cookies['canvas_otp_remember_me'] &&
         @current_user.validate_otp_secret_key_remember_me_cookie(cookies['canvas_otp_remember_me'])
@@ -568,6 +578,11 @@ class PseudonymSessionsController < ApplicationController
     end
   end
 
+  def logout_current_user
+    Auditors::Authentication.record(@current_pseudonym, 'logout')
+    super
+  end
+
   def oauth2_auth
     if params[:code] || params[:error]
       # hopefully the user never sees this, since it's an oob response and the
@@ -599,6 +614,11 @@ class PseudonymSessionsController < ApplicationController
 
   def oauth2_confirm
     @provider = Canvas::Oauth::Provider.new(session[:oauth2][:client_id], session[:oauth2][:redirect_uri], session[:oauth2][:scopes])
+
+    if mobile_device?
+      js_env :GOOGLE_ANALYTICS_KEY => Setting.get_cached('google_analytics_key', nil)
+      render :layout => 'mobile_auth', :action => 'oauth2_confirm_mobile'
+    end
   end
 
   def oauth2_accept

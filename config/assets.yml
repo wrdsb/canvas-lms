@@ -1,7 +1,6 @@
 embed_assets: off
 gzip_assets: off
-css_compressor_options:
-  line_break: 0
+css_compressor: 'sass'
 
 # if you want use IE in dev mode and want to get around the max of 30 stylesheets
 # problem, uncomment the following lines and make sure you
@@ -16,6 +15,8 @@ css_compressor_options:
 javascripts:
 
 stylesheets:
+  content_migrations: 
+    - public/stylesheets/compiled/content_migrations.css
   common:
     - public/stylesheets/compiled/g_base.css
     - public/stylesheets/static/mediaelementplayer.css
@@ -53,6 +54,8 @@ stylesheets:
   speed_grader:
     - public/stylesheets/compiled/ui.selectmenu.css
     - public/stylesheets/compiled/speed_grader.css
+  conferences:
+    - public/stylesheets/compiled/conferences.css
   plugins:
     - public/stylesheets/compiled/plugins.css
   gradebook_uploads:
@@ -65,6 +68,7 @@ stylesheets:
     - public/stylesheets/compiled/mini_calendar.css
     - public/stylesheets/compiled/calendar/sidebar.css
     - public/stylesheets/compiled/calendar/scheduler.css
+    - public/stylesheets/compiled/calendar/calendarHeader.css
   course_settings:
     - public/stylesheets/compiled/course_settings.css
     - public/stylesheets/compiled/external_tools.css
@@ -90,6 +94,7 @@ stylesheets:
     - public/stylesheets/compiled/attendance.css
   quizzes:
     - public/stylesheets/compiled/quizzes.css
+    - public/stylesheets/compiled/quizzes-mobile.css
     - public/stylesheets/compiled/message_students.css
     - public/stylesheets/compiled/ui.selectmenu.css
   moderate_quiz:
@@ -98,10 +103,14 @@ stylesheets:
     - public/stylesheets/compiled/assignments.css
     - public/stylesheets/compiled/grading_standards.css
     - public/stylesheets/static/embed_content.css
+  teacher_assignments:
+    - public/stylesheets/compiled/teacher_assignments.css
   grading_standards:
     - public/stylesheets/compiled/grading_standards.css
   login:
     - public/stylesheets/compiled/login.css
+  roster:
+    - public/stylesheets/compiled/roster.css
   roster_user:
     - public/stylesheets/compiled/roster_user.css
   learning_outcomes:
@@ -136,6 +145,9 @@ stylesheets:
   conversations:
     - public/stylesheets/compiled/conversations.css
     - public/stylesheets/compiled/slideshow.css
+  conversations_new:
+    - public/stylesheets/compiled/conversations_new.css
+    - public/stylesheets/compiled/compose_message_dialog.css
   alerts:
     - public/stylesheets/compiled/alerts.css
   developer_keys:
@@ -159,5 +171,9 @@ stylesheets:
   styleguide:
     - public/stylesheets/compiled/styleguide.css
     - public/stylesheets/compiled/syntax.css
+  locale:
+    - public/stylesheets/compiled/locale.css
+  mobile_auth:
+    - public/stylesheets/compiled/mobile_auth.css
 
   <%= plugin_assets.anchors_yml %>

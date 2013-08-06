@@ -161,6 +161,34 @@ describe "quizzes" do
       end
     end
 
+    it "should republish on save" do
+      Account.default.settings[:enable_draft] = true
+      Account.default.save!
+      get "/courses/#{@course.id}/quizzes"
+      expect_new_page_load { f(".new-quiz-link").click }
+      quiz = Quiz.last
+      expect_new_page_load do
+        click_save_settings_button
+        wait_for_ajax_requests
+      end
+      f('#quiz-publish-link').text.strip.should == 'Publish'
+      quiz.versions.length.should == 1
+      f('#quiz-publish-link').click
+      wait_for_ajax_requests
+      quiz.reload
+      quiz.versions.length.should == 2
+      get "/courses/#{@course.id}/quizzes/#{quiz.id}/edit"
+      expect_new_page_load {
+        f('#quiz-draft-state').text.strip.should == 'Published'
+        expect_new_page_load do
+          click_save_settings_button
+          wait_for_ajax_requests
+        end
+        quiz.reload
+        quiz.versions.length.should == 3
+      }
+    end
+
     it "should create a new question group" do
       get "/courses/#{@course.id}/quizzes/new"
 
@@ -249,15 +277,14 @@ describe "quizzes" do
     end
 
     it "should flag a quiz question while taking a quiz as a teacher" do
-      quiz_with_new_questions
-      expect_new_page_load do
-        click_save_settings_button
-        wait_for_ajax_requests
-      end
-      f('.publish_quiz_button').click
-      wait_for_ajax_requests
+      quiz_with_new_questions(false)
 
-      expect_new_page_load { driver.find_element(:link, 'Take the Quiz').click }
+      get "/courses/#{@course.id}/quizzes/#{@q.id}"
+
+      expect_new_page_load do
+        driver.find_element(:link, 'Take the Quiz').click
+        wait_for_ajaximations
+      end
 
       #flag first question
       hover_and_click("#question_#{@quest1.id} .flag_question")
@@ -444,6 +471,80 @@ describe "quizzes" do
       confirm_dialog.accept
     end
 
+    def upload_attachment_answer
+      fj('input[type=file]').send_keys @fullpath
+      wait_for_ajaximations
+      keep_trying_until do
+        fj('.file-uploaded').text
+        fj('.list_question, .answered').text
+      end
+      fj('.upload-label').click
+      wait_for_ajaximations
+    end
+
+    def file_upload_submission_data
+      @quiz.reload.quiz_submissions.first.
+        submission_data["question_#{@question.id}".to_sym]
+    end
+
+    def file_upload_attachment
+      @quiz.reload.quiz_submissions.first.attachments.first
+    end
+
+
+    it "works with file upload questions" do
+      @context = @course
+      bank = @course.assessment_question_banks.create!(:title => 'Test Bank')
+      q = quiz_model
+      a = AssessmentQuestion.create!
+      b = AssessmentQuestion.create!
+      bank.assessment_questions << a
+      bank.assessment_questions << b
+      answers = {'answer_0' => {'id' => 1}, 'answer_1' => {'id' => 2}}
+      @question = q.quiz_questions.create!(:question_data => {
+          :name => "first question",
+          'question_type' => 'file_upload_question',
+          'question_text' => 'file upload question maaaan',
+          'answers' => answers,
+          :points_possible => 1
+      }, :assessment_question => a)
+      q.generate_quiz_data
+      q.save!
+      filename,@fullpath,data = get_file "testfile1.txt"
+      get "/courses/#{@course.id}/quizzes/#{q.id}/take?user_id=#{@user.id}"
+      expect_new_page_load do
+        driver.find_element(:link_text, 'Take the Quiz').click
+      end
+      wait_for_animations
+      # so we can .send_keys to the input, can't if it's invisible to
+      # the browser
+      driver.execute_script "$('.file-upload').removeClass('hidden')"
+      upload_attachment_answer
+      file_upload_submission_data.should == [ file_upload_attachment.id.to_s ]
+      # delete the attachment id
+      fj('.delete-attachment').click
+      keep_trying_until do
+        fj('.answered').should == nil
+      end
+      keep_trying_until do
+        fj('.upload-label').click
+        wait_for_ajaximations
+        file_upload_submission_data.should == [""]
+      end
+      upload_attachment_answer
+      expect_new_page_load do
+        driver.get driver.current_url
+        driver.switch_to.alert.accept
+      end
+      wait_for_animations
+      attachment = file_upload_attachment
+      fj('.file-upload-box').text.should include attachment.display_name
+      f('#submit_quiz_button').click
+      keep_trying_until do
+        fj('.selected_answer').text.should include attachment.display_name
+      end
+    end
+
     it "should notify a student of extra time given by a moderator" do
       @context = @course
       bank = @course.assessment_question_banks.create!(:title => 'Test Bank')
@@ -503,13 +604,13 @@ describe "quizzes" do
       f('#content .question_name').should include_text("Question 1")
     end
 
-    it "should not display a link to quiz statistics for a MOOC" do
+    it "should display a link to quiz statistics for a MOOC" do
       quiz_with_submission
       @course.large_roster = true
       @course.save!
       get "/courses/#{@course.id}/quizzes/#{@quiz.id}"
 
-      f('#right-side').should_not include_text('Quiz Statistics')
+      f('#right-side').should include_text('Quiz Statistics')
     end
 
     it "should delete a quiz" do
@@ -590,6 +691,51 @@ describe "quizzes" do
       wait_for_ajaximations
       fj('#rubrics .add_rubric_link:visible').click
       fj('.rubric_grading:visible').should be_nil
+    end
+
+    context "with draft state" do
+      before(:each) do
+        Account.default.settings[:enable_draft] = true
+        Account.default.save!
+      end
+
+      it "should click the publish button to publish a quiz" do
+        @context = @course
+        q = quiz_model
+        q.unpublish!
+
+        get "/courses/#{@course.id}/quizzes/#{q.id}"
+        f('#quiz-publish-link').should include_text("Publish")
+
+        expect_new_page_load do
+          f('.quiz-publish-button').click
+          wait_for_ajaximations
+        end
+
+        # move mouse to not be hover over the button
+        driver.mouse.move_to f('#footer')
+
+        f('#quiz-publish-link').should include_text("Published")
+      end
+
+      it "should click the unpublish button to unpublish a quiz" do
+        @context = @course
+        q = quiz_model
+        q.publish!
+
+        get "/courses/#{@course.id}/quizzes/#{q.id}"
+        f('#quiz-publish-link').should include_text("Published")
+
+        expect_new_page_load do
+          f('.quiz-publish-button').click
+          wait_for_ajaximations
+        end
+
+        # move mouse to not be hover over the button
+        driver.mouse.move_to f('#footer')
+
+        f('#quiz-publish-link').should include_text("Publish")
+      end
     end
   end
 end

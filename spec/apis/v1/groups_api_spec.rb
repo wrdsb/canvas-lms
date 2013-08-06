@@ -328,6 +328,7 @@ describe "Groups API", :type => :integration do
   context "memberships" do
     before do
       @memberships_path = "#{@community_path}/memberships"
+      @alternate_memberships_path = "#{@community_path}/users"
       @memberships_path_options = { :controller => "group_memberships", :format => "json" }
     end
 
@@ -395,6 +396,20 @@ describe "Groups API", :type => :integration do
       json.should == membership_json(@membership)
     end
 
+    it "should allow accepting a join request by a moderator using users/:user_id endpoint" do
+      @user = user_model
+      user_id = @user.id
+      @community.join_level = "parent_context_request"
+      @community.save!
+      @membership = @community.add_user(@user)
+      @user = @moderator
+      json = api_call(:put, "#{@alternate_memberships_path}/#{user_id}", @memberships_path_options.merge(:group_id => @community.to_param, :user_id => user_id.to_param, :action => "update"), {
+          :workflow_state => "accepted"
+      })
+      @membership.reload.should be_active
+      json.should == membership_json(@membership)
+    end
+
     it "should not allow other workflow_state modifications" do
       @user = @moderator
       @membership = @community.group_memberships.find_by_user_id(@member.id)
@@ -414,6 +429,25 @@ describe "Groups API", :type => :integration do
       @membership.reload.should be_active
     end
 
+    it "should not allow other workflow_state modifications using users/:user_id endpoint" do
+      @user = @moderator
+      @membership = @community.group_memberships.find_by_user_id(@member.id)
+      json = api_call(:put, "#{@alternate_memberships_path}/#{@user.id}", @memberships_path_options.merge(:group_id => @community.to_param, :user_id => @user.to_param, :action => "update"), {
+          :workflow_state => "requested"
+      })
+      @membership.reload.should be_active
+
+      json = api_call(:put, "#{@alternate_memberships_path}/#{@user.id}", @memberships_path_options.merge(:group_id => @community.to_param, :user_id => @user.to_param, :action => "update"), {
+          :workflow_state => "invited"
+      })
+      @membership.reload.should be_active
+
+      json = api_call(:put, "#{@alternate_memberships_path}/#{@user.id}", @memberships_path_options.merge(:group_id => @community.to_param, :user_id => @user.to_param, :action => "update"), {
+          :workflow_state => "deleted"
+      })
+      @membership.reload.should be_active
+    end
+
     it "should not allow a member to accept join requests" do
       @user = user_model
       @community.join_level = "parent_context_request"
@@ -422,6 +456,18 @@ describe "Groups API", :type => :integration do
       @user = @member
       api_call(:put, "#{@memberships_path}/#{@membership.id}", @memberships_path_options.merge(:group_id => @community.to_param, :membership_id => @membership.to_param, :action => "update"), {
         :workflow_state => "accepted"
+      }, {}, :expected_status => 401)
+      @membership.reload.should be_requested
+    end
+
+    it "should not allow a member to accept join requests using users/:user_id endpoint" do
+      @user = user_model
+      @community.join_level = "parent_context_request"
+      @community.save!
+      @membership = @community.add_user(@user)
+      @user = @member
+      api_call(:put, "#{@alternate_memberships_path}/#{@user.id}", @memberships_path_options.merge(:group_id => @community.to_param, :user_id => @user.to_param, :action => "update"), {
+          :workflow_state => "accepted"
       }, {}, :expected_status => 401)
       @membership.reload.should be_requested
     end
@@ -440,11 +486,34 @@ describe "Groups API", :type => :integration do
       @membership.reload.moderator.should be_false
     end
 
+    it "should allow changing moderator privileges using users/:user_id endpoint" do
+      @user = @moderator
+      @membership = @community.group_memberships.find_by_user_id(@member.id)
+      api_call(:put, "#{@alternate_memberships_path}/#{@member.id}", @memberships_path_options.merge(:group_id => @community.to_param, :user_id => @member.to_param, :action => "update"), {
+          :moderator => true
+      })
+      @membership.reload.moderator.should be_true
+
+      api_call(:put, "#{@alternate_memberships_path}/#{@member.id}", @memberships_path_options.merge(:group_id => @community.to_param, :user_id => @member.to_param, :action => "update"), {
+          :moderator => false
+      })
+      @membership.reload.moderator.should be_false
+    end
+
     it "should not allow a member to change moderator privileges" do
       @user = @member
       @membership = @community.group_memberships.find_by_user_id(@moderator.id)
       api_call(:put, "#{@memberships_path}/#{@membership.id}", @memberships_path_options.merge(:group_id => @community.to_param, :membership_id => @membership.to_param, :action => "update"), {
         :moderator => false
+      }, {}, :expected_status => 401)
+      @membership.reload.moderator.should be_true
+    end
+
+    it "should not allow a member to change moderator privileges using users/:user_id endpoint" do
+      @user = @member
+      @membership = @community.group_memberships.find_by_user_id(@moderator.id)
+      api_call(:put, "#{@alternate_memberships_path}/#{@user.id}", @memberships_path_options.merge(:group_id => @community.to_param, :user_id => @user.to_param, :action => "update"), {
+          :moderator => false
       }, {}, :expected_status => 401)
       @membership.reload.moderator.should be_true
     end
@@ -457,9 +526,24 @@ describe "Groups API", :type => :integration do
       @membership.workflow_state.should == "deleted"
     end
 
+    it "should allow someone to leave a group using users/:user_id endpoint" do
+      @user = @member
+      @gm = @community.group_memberships.where(:user_id => @user).first
+      api_call(:delete, "#{@alternate_memberships_path}/#{@user.id}", @memberships_path_options.merge(:group_id => @community.to_param, :user_id => @user.to_param, :action => "destroy"))
+      @membership = GroupMembership.where(:user_id => @user, :group_id => @community).first
+      @membership.workflow_state.should == "deleted"
+    end
+
     it "should allow leaving a group using 'self'" do
       @user = @member
       api_call(:delete, "#{@memberships_path}/self", @memberships_path_options.merge(:group_id => @community.to_param, :membership_id => 'self', :action => "destroy"))
+      @membership = GroupMembership.where(:user_id => @user, :group_id => @community).first
+      @membership.workflow_state.should == "deleted"
+    end
+
+    it "should allow leaving a group using 'self' using users/:user_id endpoint" do
+      @user = @member
+      api_call(:delete, "#{@alternate_memberships_path}/self", @memberships_path_options.merge(:group_id => @community.to_param, :user_id => 'self', :action => "destroy"))
       @membership = GroupMembership.where(:user_id => @user, :group_id => @community).first
       @membership.workflow_state.should == "deleted"
     end
@@ -524,6 +608,16 @@ describe "Groups API", :type => :integration do
   end
 
   context "users" do
+    let(:api_url) { "/api/v1/groups/#{@community.id}/users.json" }
+    let(:api_route) do
+      {
+          :controller => 'groups',
+          :action => 'users',
+          :group_id => @community.to_param,
+          :format => 'json'
+      }
+    end
+
     it "should return users in a group" do
       expected_keys = %w{id name sortable_name short_name}
       json = api_call(:get, "/api/v1/groups/#{@community.id}/users",
@@ -540,6 +634,24 @@ describe "Groups API", :type => :integration do
       raw_api_call(:get, "/api/v1/groups/#{@community.id}/users",
                          { :controller => 'groups', :action => 'users', :group_id => @community.to_param, :format => 'json' })
       response.code.should == '401'
+    end
+
+    it "returns an error when search_term is fewer than 3 characters" do
+      json = api_call(:get, api_url, api_route, {:search_term => '12'}, {}, :expected_status => 400)
+      json["status"].should == "argument_error"
+      json["message"].should == "search_term of 3 or more characters is required"
+    end
+
+    it "returns a list of users" do
+      expected_keys = %w{id name sortable_name short_name}
+
+      json = api_call(:get, api_url, api_route, {:search_term => 'value'})
+
+      json.count.should == 1
+      json.each do |user|
+        (user.keys & expected_keys).sort.should == expected_keys.sort
+        @community.users.map(&:id).should include(user['id'])
+      end
     end
   end
 
@@ -563,6 +675,56 @@ describe "Groups API", :type => :integration do
       
     def context
       @community
+    end
+  end
+
+  it "should return the activity stream" do
+    course_with_teacher(:active_all => true, :user => user_with_pseudonym)
+    @group = @course.groups.create!(:name => 'Group 1')
+    @group.users << @user
+    @context = @group
+    @topic1 = discussion_topic_model
+    json = api_call(:get, "/api/v1/groups/#{@group.id}/activity_stream.json",
+                    { controller: "groups", group_id: @group.id.to_s, action: "activity_stream", format: 'json' })
+    json.size.should == 1
+  end
+
+  it "should return the activity stream summary" do
+    course_with_teacher(:active_all => true, :user => user_with_pseudonym)
+    @group = @course.groups.create!(:name => 'Group 1')
+    @group.users << @user
+    @context = @group
+    @topic1 = discussion_topic_model
+    json = api_call(:get, "/api/v1/groups/#{@group.id}/activity_stream/summary.json",
+                    { controller: "groups", group_id: @group.id.to_s, action: "activity_stream_summary", format: 'json' })
+    json.should == [{"type" => "DiscussionTopic", "count" => 1, "unread_count" => 1, "notification_category" => nil}]
+  end
+
+  describe "/preview_html" do
+    before do
+      course_with_teacher_logged_in(:active_all => true)
+      @group = @course.groups.create!(:name => 'Group 1')
+    end
+
+    it "should sanitize html and process links" do
+      @user = @teacher
+      attachment_model(:context => @group)
+      html = %{<p><a href="/files/#{@attachment.id}/download?verifier=huehuehuehue">Click!</a><script></script></p>}
+      json = api_call(:post, "/api/v1/groups/#{@group.id}/preview_html",
+                      { :controller => 'groups', :action => 'preview_html', :group_id => @group.to_param, :format => 'json' },
+                      { :html => html})
+
+      returned_html = json["html"]
+      returned_html.should_not include("<script>")
+      returned_html.should include("/groups/#{@group.id}/files/#{@attachment.id}/download?verifier=#{@attachment.uuid}")
+    end
+
+    it "should require permission to preview" do
+      @user = user
+      api_call(:post, "/api/v1/groups/#{@group.id}/preview_html",
+                      { :controller => 'groups', :action => 'preview_html', :group_id => @group.to_param, :format => 'json' },
+                      { :html => ""}, {}, {:expected_status => 401})
+
     end
   end
 end

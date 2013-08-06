@@ -93,8 +93,8 @@ module MigratorHelper
   end
 
   def set_progress(progress)
-    if content_migration && content_migration.respond_to?(:fast_update_progress)
-      content_migration.fast_update_progress(progress)
+    if content_migration && content_migration.respond_to?(:update_conversion_progress)
+      content_migration.update_conversion_progress(progress)
     end
   end
   
@@ -334,11 +334,16 @@ module MigratorHelper
     end
     if @course[:discussion_topics]
       @overview[:discussion_topics] = []
+      @overview[:announcements] = []
       @course[:discussion_topics].each do |t|
         topic = {}
-        @overview[:discussion_topics] << topic
+        if t[:type] == 'announcement'
+          @overview[:announcements] << topic
+        else
+          @overview[:discussion_topics] << topic
+        end
         topic[:title] = t[:title]
-        topic[:topic_type] = t[:topic_type]
+        topic[:topic_type] = t[:type]
         topic[:migration_id] = t[:migration_id]
         topic[:error_message] = t[:error_message] if t[:error_message]
       end

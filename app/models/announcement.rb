@@ -30,14 +30,18 @@ class Announcement < DiscussionTopic
   validates_presence_of :context_id
   validates_presence_of :context_type
   validates_presence_of :message
-  
+
+  acts_as_list scope: %q{context_id = '#{context_id}' AND
+                         context_type = '#{context_type}' AND
+                         type = 'Announcement'}
+
   def infer_content
     self.title ||= t(:no_title, "No Title")
   end
   protected :infer_content
 
   def respect_context_lock_rules
-    lock if active? &&
+    lock if !locked? &&
             context.is_a?(Course) &&
             context.lock_all_announcements?
   end
@@ -59,7 +63,7 @@ class Announcement < DiscussionTopic
     given { |user| self.user == user and self.discussion_entries.active.empty? }
     can :delete
     
-    given { |user, session| self.context.grants_rights?(user, session, :read)[:read] }
+    given { |user, session| self.context.grants_right?(user, session, :read) }
     can :read
     
     given { |user, session| self.context.grants_right?(user, session, :post_to_forum) }
@@ -73,4 +77,13 @@ class Announcement < DiscussionTopic
   end
   
   def is_announcement; true end
+
+  # no one should receive discussion entry notifications for announcements
+  def subscribers
+    []
+  end
+
+  def subscription_hold(user, context_enrollment, session)
+    :topic_is_announcement
+  end
 end

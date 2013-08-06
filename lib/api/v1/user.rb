@@ -75,6 +75,10 @@ module Api::V1::User
     end
   end
 
+  def users_json(users, current_user, session, includes = [], context = @context, enrollments = nil)
+    users.map{ |user| user_json(user, current_user, session, includes, context, enrollments) }
+  end
+
   # this mini-object is used for secondary user responses, when we just want to
   # provide enough information to display a user.
   # for instance, discussion entries return this json as a sub-object.
@@ -155,7 +159,7 @@ module Api::V1::User
         json[:locked] = lockedbysis
       end
       if includes.include?('observed_users') && enrollment.observer? && enrollment.associated_user
-        json[:observed_user] = user_json(enrollment.associated_user, user, session, user_includes, @context, enrollment.associated_user.not_ended_enrollments.all_student)
+        json[:observed_user] = user_json(enrollment.associated_user, user, session, user_includes, @context, enrollment.associated_user.not_ended_enrollments.all_student.where(:course_id => enrollment.course_id))
       end
     end
   end

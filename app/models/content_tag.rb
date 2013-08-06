@@ -46,6 +46,8 @@ class ContentTag < ActiveRecord::Base
   include CustomValidations
   validates_as_url :url
 
+  acts_as_list :scope => :context_module
+
   attr_accessible :learning_outcome, :context, :tag_type, :mastery_score, :content_asset_string, :content, :title, :indent, :position, :url, :new_tab, :content_type
 
   set_policy do
@@ -54,11 +56,17 @@ class ContentTag < ActiveRecord::Base
   end
   
   workflow do
-    state :active
+    state :active do
+      event :unpublish, :transitions_to => :unpublished
+    end
+    state :unpublished do
+      event :publish, :transitions_to => :active
+    end
     state :deleted
   end
-  
-  scope :active, where("content_tags.workflow_state<>'deleted'")
+
+  scope :active, where(:workflow_state => 'active')
+  scope :not_deleted, where("content_tags.workflow_state<>'deleted'")
 
   attr_accessor :skip_touch
   def touch_context_module
@@ -157,17 +165,48 @@ class ContentTag < ActiveRecord::Base
   def content_or_self
     content || self
   end
-  
+
+  def asset_safe_title(column)
+    name = self.title.to_s
+    if (limit = self.content.class.try(:columns_hash)[column].try(:limit)) && name.length > limit
+      name = name[0, limit][/.{0,#{limit}}/mu]
+    end
+    name
+  end
+
   def update_asset_name!
-    return if !self.sync_title_to_asset_title?
+    return unless self.sync_title_to_asset_title?
     correct_context = self.content && self.content.respond_to?(:context) && self.content.context == self.context
     if correct_context
       if self.content.respond_to?("name=") && self.content.respond_to?("name") && self.content.name != self.title
-        self.content.update_attribute(:name, self.title)
+        self.content.update_attribute(:name, asset_safe_title('name'))
       elsif self.content.respond_to?("title=") && self.content.title != self.title
-        self.content.update_attribute(:title, self.title)
+        self.content.update_attribute(:title, asset_safe_title('title'))
       elsif self.content.respond_to?("display_name=") && self.content.display_name != self.title
-        self.content.update_attribute(:display_name, self.title)
+        self.content.update_attribute(:display_name, asset_safe_title('display_name'))
+      end
+    end
+  end
+
+  def update_asset_workflow_state!
+    return unless self.sync_workflow_state_to_asset?
+    correct_context = self.content && self.content.respond_to?(:context) && self.content.context == self.context
+    if correct_context
+      asset_workflow_state = nil
+      if self.unpublished? && self.content.respond_to?(:unpublished?)
+        asset_workflow_state = 'unpublished'
+      elsif self.active?
+        if self.content.respond_to?(:active?)
+          asset_workflow_state = 'active'
+        elsif self.content.respond_to?(:available?)
+          asset_workflow_state = 'available'
+        elsif self.content.respond_to?(:published?)
+          asset_workflow_state = 'published'
+        end
+      end
+      if asset_workflow_state
+        self.content.update_attribute(:workflow_state, asset_workflow_state)
+        self.class.update_for(self.content)
       end
     end
   end
@@ -215,29 +254,47 @@ class ContentTag < ActiveRecord::Base
     true
   end
 
-  def locked_for?(user, deep_check=false)
-    self.context_module.locked_for?(user, self, deep_check)
+  def locked_for?(user, opts={})
+    self.context_module.locked_for?(user, opts.merge({:tag => self}))
   end
   
-  def available_for?(user, deep_check=false)
-    self.context_module.available_for?(user, self, deep_check)
+  def available_for?(user, opts={})
+    self.context_module.available_for?(user, opts.merge({:tag => self}))
   end
   
   def self.update_for(asset)
-    tags = ContentTag.where(:content_id => asset, :content_type => asset.class.to_s).select([:id, :tag_type, :content_type, :context_module_id]).all
-    tag_ids = tags.select{|t| t.sync_title_to_asset_title? }.map(&:id)
+    tags = ContentTag.where(:content_id => asset, :content_type => asset.class.to_s).not_deleted.select([:id, :tag_type, :content_type, :context_module_id]).all
     module_ids = tags.select{|t| t.context_module_id }.map(&:context_module_id)
+
+    # update title
+    tag_ids = tags.select{|t| t.sync_title_to_asset_title? }.map(&:id)
     attr_hash = {:updated_at => Time.now.utc}
     {:display_name => :title, :name => :title, :title => :title}.each do |attr, val|
       attr_hash[val] = asset.send(attr) if asset.respond_to?(attr)
     end
-    attr_hash[:workflow_state] = 'deleted' if asset.respond_to?(:workflow_state) && asset.workflow_state == 'deleted'
     ContentTag.where(:id => tag_ids).update_all(attr_hash)
+
+    # update workflow_state
+    tag_ids = tags.select{|t| t.sync_workflow_state_to_asset? }.map(&:id)
+    attr_hash = {:updated_at => Time.now.utc}
+    if asset.respond_to?(:workflow_state)
+      if ['active', 'available', 'published'].include?(asset.workflow_state)
+        attr_hash[:workflow_state] = 'active'
+      elsif ['unpublished', 'deleted'].include?(asset.workflow_state)
+        attr_hash[:workflow_state] = asset.workflow_state
+      end
+    end
+    ContentTag.where(:id => tag_ids).update_all(attr_hash) if attr_hash[:workflow_state]
+
     ContentTag.touch_context_modules(module_ids)
   end
   
   def sync_title_to_asset_title?
     self.tag_type != "learning_outcome_association" && !['ContextExternalTool', 'Attachment'].member?(self.content_type)
+  end
+
+  def sync_workflow_state_to_asset?
+    ['Assignment', 'WikiPage'].include?(self.content_type)
   end
   
   def context_module_action(user, action, points=nil)

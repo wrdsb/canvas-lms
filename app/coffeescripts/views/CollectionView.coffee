@@ -1,7 +1,8 @@
 define [
+  'jquery'
   'Backbone'
   'jst/collectionView'
-], (Backbone, template) ->
+], ($, Backbone, template) ->
 
   ##
   # Renders a collection of items with an item view. Binds to a handful of
@@ -24,10 +25,15 @@ define [
 
     @optionProperty 'itemView'
 
+    @optionProperty 'itemViewOptions'
+
     className: 'collectionView'
 
     els:
       '.collectionViewItems': '$list'
+
+    defaults:
+      itemViewOptions: {}
 
     ##
     # When using a different template ensure it contains an element with a
@@ -56,9 +62,11 @@ define [
     render: =>
       super
       @renderItems() if @collection.length
+      this
 
     ##
     # @api public
+
     toJSON: -> @options
 
     ##
@@ -81,7 +89,7 @@ define [
 
     removePreviousItems: (models) =>
       @$list.children().each (index, el) =>
-        @$(el).data('view').remove()
+        @$(el).data('view')?.remove()
 
     renderOnReset: =>
       @removePreviousItems()
@@ -131,9 +139,17 @@ define [
     # @api private
 
     renderItem: (model) =>
-      view = new @itemView {model}
+      view = @createItemView model
       view.render()
+      @attachItemView?(model, view)
       @insertView view
+
+    ##
+    # Creates the item view instance, extend this when you need to do things
+    # like instantiate with child views, etc.
+
+    createItemView: (model) ->
+      new @itemView $.extend {}, (@itemViewOptions || {}), {model}
 
     ##
     # Inserts the item view with respect to the collection comparator.

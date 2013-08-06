@@ -54,9 +54,9 @@ describe "quizzes" do
 
       describe "on individual quiz page" do
         def validate_resume_button_text(text)
-          f('#right-side .btn').text.should == text
+          f('#not_right_side .take_quiz_button').text.should == text
         end
-        
+
         before do
           @resume_text = 'Resume Quiz'
         end
@@ -67,23 +67,29 @@ describe "quizzes" do
         end
 
         it "should show the resume quiz button if the quiz unlock_at date is < now" do
+          pending('193')
           update_quiz_lock(Time.now - 1.day.ago, Time.now - 10.minutes.ago)
           get "/courses/#{@course.id}/quizzes/#{@quiz.id}"
           validate_resume_button_text(@resume_text)
         end
 
         it "should not show the resume quiz button if quiz is locked" do
+          pending('193')
           update_quiz_lock(Time.now - 5.minutes, nil)
           get "/courses/#{@course.id}/quizzes/#{@quiz.id}"
-          right_side = f('#right-side')
-          right_side.should_not include_text("You're in the middle of taking this quiz.")
-          right_side.should_not include_text(@resume_text)
+          f('#not_right_side .take_quiz_button').should_not be_present
+        end
+
+        it "should not see the publish button" do
+          get "/courses/#{@course.id}/quizzes/#{@quiz.id}"
+          f('#quiz-publish-link').should_not be_present
         end
       end
     end
 
     context "who gets logged out while taking a quiz" do
       it "should be notified and able to relogin" do
+        pending('193')
         # setup a quiz and start taking it
         quiz_with_new_questions(!:goto_edit)
         get "/courses/#{@course.id}/quizzes/#{@quiz.id}"

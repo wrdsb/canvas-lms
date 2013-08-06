@@ -31,9 +31,12 @@ class ConversationsController < ApplicationController
   before_filter :infer_scope, :only => [:index, :show, :create, :update, :add_recipients, :add_message, :remove_messages]
   before_filter :normalize_recipients, :only => [:create, :add_recipients]
   before_filter :infer_tags, :only => [:create, :add_message, :add_recipients]
+
   # whether it's a bulk private message, or a big group conversation,
   # batch up all delayed jobs to make this more responsive to the user
   batch_jobs_in_actions :only => :create
+
+  API_ALLOWED_FIELDS = %w{workflow_state subscribed starred scope filter}
 
   # @API List conversations
   # Returns the list of conversations for the current user, most recent ones first.
@@ -137,8 +140,13 @@ class ConversationsController < ApplicationController
         :SHOW_INTRO => !@current_user.watched_conversations_intro?,
         :FOLDER_ID => @current_user.conversation_attachments_folder.id,
         :MEDIA_COMMENTS_ENABLED => feature_enabled?(:kaltura),
-      })
+      }, :CONTEXT_ACTION_SOURCE => :conversation)
     end
+  end
+
+  # New Conversations UI. When finished, move back to index action.
+  def index_new
+    return unless authorized_action(Account.site_admin, @current_user, :become_user)
   end
 
   # @API Create a conversation
@@ -390,7 +398,7 @@ class ConversationsController < ApplicationController
   #     "participants": [{"id": 1, "name": "Joe TA"}]
   #   }
   def update
-    if @conversation.update_attributes(params[:conversation])
+    if @conversation.update_attributes(params[:conversation].slice(*API_ALLOWED_FIELDS))
       render :json => conversation_json(@conversation, @current_user, session)
     else
       render :json => @conversation.errors, :status => :bad_request
@@ -604,6 +612,15 @@ class ConversationsController < ApplicationController
   # Deprecated, see the {api:SearchController#recipients Find recipients endpoint} in the Search API
   def find_recipients; end
 
+  # @API Unread count
+  # Get the number of unread conversations for the current user
+  #
+  # @example_response
+  #   {'unread_count': '7'}
+  def unread_count
+    render(:json => {'unread_count' => @current_user.unread_conversations_count.to_json})
+  end
+  
   def public_feed
     return unless get_feed_context(:only => [:user])
     @current_user = @context

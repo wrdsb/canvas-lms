@@ -55,11 +55,12 @@
 class GroupCategoriesController < ApplicationController
   before_filter :get_context
   before_filter :require_context, :only => [:create, :index]
-  before_filter :get_category_context, :only => [:show, :update, :destroy, :groups]
+  before_filter :get_category_context, :only => [:show, :update, :destroy, :groups, :users, :assign_unassigned_members]
 
   include Api::V1::Attachment
   include Api::V1::GroupCategory
   include Api::V1::Group
+  include Api::V1::Progress
 
   SETTABLE_GROUP_ATTRIBUTES = %w(name description join_level is_public group_category avatar_attachment)
 
@@ -190,7 +191,7 @@ class GroupCategoriesController < ApplicationController
   # categories can not be deleted, i.e. "communities", "student_organized", and "imported".
   #
   # @example_request
-  #     curl https://<canvas>/api/v1/group_categories/<group_category_id> \ 
+  #     curl https://<canvas>/api/v1/group_categories/<group_category_id> \
   #           -X DELETE \ 
   #           -H 'Authorization: Bearer <token>'
   #
@@ -227,9 +228,173 @@ class GroupCategoriesController < ApplicationController
   # @returns [Groups]
   def groups
     if authorized_action(@context, @current_user, :manage_groups)
-      @groups = @group_category.groups.active
+      @groups = @group_category.groups.active.by_name
       @groups = Api.paginate(@groups, self, api_v1_group_category_groups_url)
       render :json => @groups.map { |g| group_json(g, @current_user, session) }
+    end
+  end
+
+  include Api::V1::User
+  # @API List users
+  #
+  # Returns a list of users in the group category.
+  #
+  # @argument search_term (optional)
+  #   The partial name or full ID of the users to match and return in the results list.
+  #   Must be at least 3 characters.
+  #
+  # @argument unassigned (optional)
+  #   Set this value to true if you wish only to search unassigned users in the group category
+  #
+  # @example_request
+  #     curl https://<canvas>/api/v1/group_categories/1/users \
+  #          -H 'Authorization: Bearer <token>'
+  #
+  # @returns [User]
+  def users
+    if @context.is_a? Course
+      return unless authorized_action(@context, @current_user, :read_roster)
+    else
+      return unless authorized_action(@context, @current_user, :read)
+    end
+
+    search_term = params[:search_term]
+
+    if search_term && search_term.size < 3
+      return render \
+          :json => {
+          "status" => "argument_error",
+          "message" => "search_term of 3 or more characters is required" },
+          :status => :bad_request
+    end
+
+    search_params = params.slice(:search_term)
+    search_params[:enrollment_role] = "StudentEnrollment" if @context.is_a? Course
+
+    @group_category ||= @context.group_categories.find_by_id(params[:category_id])
+    exclude_groups = params[:unassigned] ? @group_category.groups.active : []
+    search_params[:exclude_groups] = exclude_groups
+
+    if search_term
+      users = UserSearch.for_user_in_context(search_term, @context, @current_user, search_params)
+    else
+      users = UserSearch.scope_for(@context, @current_user, search_params)
+    end
+
+    users = Api.paginate(users, self, api_v1_group_category_users_url)
+    render :json => users.map { |u| user_json(u, @current_user, session, [], @context) }
+  end
+
+  # @API Assign unassigned members
+  #
+  # Assign all unassigned members as evenly as possible among the existing
+  # student groups.
+  #
+  # @argument sync (optional)
+  #   The assigning is done asynchronously by default. If you would like to
+  #   override this and have the assigning done synchronously, set this value
+  #   to true.
+  #
+  # @example_request
+  #     curl https://<canvas>/api/v1/group_categories/1/assign_unassigned_members \
+  #          -H 'Authorization: Bearer <token>'
+  #
+  # @example_response
+  #    # Progress (default)
+  #    {
+  #        "completion": 0,
+  #        "context_id": 20,
+  #        "context_type": "GroupCategory",
+  #        "created_at": "2013-07-05T10:57:48-06:00",
+  #        "id": 2,
+  #        "message": null,
+  #        "tag": "assign_unassigned_members",
+  #        "updated_at": "2013-07-05T10:57:48-06:00",
+  #        "user_id": null,
+  #        "workflow_state": "running",
+  #        "url": "http://localhost:3000/api/v1/progress/2"
+  #    }
+  #
+  # @example_response
+  #    # New Group Memberships (when sync = true)
+  #    [
+  #      {
+  #        "id": 65,
+  #        "new_members": [
+  #          {
+  #            "user_id": 2,
+  #            "name": "Sam",
+  #            "display_name": "Sam",
+  #            "sections": [
+  #              {
+  #                "section_id": 1,
+  #                "section_code": "Section 1"
+  #              }
+  #            ]
+  #          },
+  #          {
+  #            "user_id": 3,
+  #            "name": "Sue",
+  #            "display_name": "Sue",
+  #            "sections": [
+  #              {
+  #                "section_id": 2,
+  #                "section_code": "Section 2"
+  #              }
+  #            ]
+  #          }
+  #        ]
+  #      },
+  #      {
+  #        "id": 66,
+  #        "new_members": [
+  #          {
+  #            "user_id": 5,
+  #            "name": "Joe",
+  #            "display_name": "Joe",
+  #            "sections": [
+  #              {
+  #                "section_id": 2,
+  #                "section_code": "Section 2"
+  #              }
+  #            ]
+  #          },
+  #          {
+  #            "user_id": 11,
+  #            "name": "Cecil",
+  #            "display_name": "Cecil",
+  #            "sections": [
+  #              {
+  #                "section_id": 3,
+  #                "section_code": "Section 3"
+  #              }
+  #            ]
+  #          }
+  #        ]
+  #      }
+  #    ]
+  #
+  # @returns Group Membership or Progress
+  def assign_unassigned_members
+    return unless authorized_action(@context, @current_user, :manage_groups)
+
+    # option disabled for student organized groups or section-restricted
+    # self-signup groups. (but self-signup is ignored for non-Course groups)
+    return render(:json => {}, :status => :bad_request) if @group_category.student_organized?
+    return render(:json => {}, :status => :bad_request) if @context.is_a?(Course) && @group_category.restricted_self_signup?
+
+    if value_to_boolean(params[:sync])
+      # do the distribution and note the changes
+      memberships = @group_category.assign_unassigned_members
+
+      # render the changes
+      json = memberships.group_by{ |m| m.group_id }.map do |group_id, new_members|
+        { :id => group_id, :new_members => new_members.map{ |m| m.user.group_member_json(@context) } }
+      end
+      render :json => json
+    else
+      @group_category.assign_unassigned_members_in_background
+      render :json => progress_json(@group_category.current_progress, @current_user, session)
     end
   end
 
@@ -260,6 +425,7 @@ class GroupCategoriesController < ApplicationController
     end
     @group_category.name = name
     @group_category.configure_self_signup(enable_self_signup, restrict_self_signup)
+    @group_category.group_limit = args[:group_limit]
     @group_category.save
   end
 
@@ -320,3 +486,7 @@ class GroupCategoriesController < ApplicationController
   end
 
 end
+
+
+
+

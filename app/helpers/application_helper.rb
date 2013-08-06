@@ -160,7 +160,7 @@ module ApplicationHelper
     end
   end
 
-  def avatar_image(user_or_id, width=50)
+  def avatar_image(user_or_id, width=50, opts = {})
     user_id = user_or_id.is_a?(User) ? user_or_id.id : user_or_id
     user = user_or_id.is_a?(User) && user_or_id
     if session["reported_#{user_id}"]
@@ -179,14 +179,17 @@ module ApplicationHelper
         alt = user ? user.short_name : ''
         [url, alt]
       end
-      image_tag(image_url, :style => "width: #{width}px; min-height: #{(width/1.6).to_i}px; max-height: #{(width*1.6).to_i}px", :alt => alt_tag)
+      image_tag(image_url,
+        :style => "width: #{width}px; min-height: #{(width/1.6).to_i}px; max-height: #{(width*1.6).to_i}px",
+        :alt => alt_tag,
+        :class => Array(opts[:image_class]).join(' '))
     end
   end
 
-  def avatar(user_or_id, context_code, width=50)
+  def avatar(user_or_id, context_code, width=50, opts = {})
     user_id = user_or_id.is_a?(User) ? user_or_id.id : user_or_id
     if service_enabled?(:avatars)
-      link_to(avatar_image(user_or_id, width), "#{context_prefix(context_code)}/users/#{user_id}", :style => 'z-index: 2; position: relative;', :class => 'avatar')
+      link_to(avatar_image(user_or_id, width, opts), "#{context_prefix(context_code)}/users/#{user_id}", :style => 'z-index: 2; position: relative;', :class => 'avatar img-circle')
     end
   end
 
@@ -207,7 +210,7 @@ module ApplicationHelper
   # context_url(@context, :controller => :assignments, :action => :show)
   def context_url(context, *opts)
     @context_url_lookup ||= {}
-    context_name = (context ? context.class.base_ar_class : context.class).name.underscore
+    context_name = url_helper_context_from_object(context)
     lookup = [context ? context.id : nil, context_name, *opts]
     return @context_url_lookup[lookup] if @context_url_lookup[lookup]
     res = nil
@@ -229,6 +232,10 @@ module ApplicationHelper
       res = context_name.to_s + opts.to_json.to_s
     end
     @context_url_lookup[lookup] = res
+  end
+
+  def url_helper_context_from_object(context)
+    (context ? context.class.base_ar_class : context.class).name.underscore
   end
 
   def message_user_path(user)
@@ -529,16 +536,17 @@ module ApplicationHelper
     contexts << @context if @context && @context.respond_to?(:context_external_tools)
     contexts += @context.account_chain if @context.respond_to?(:account_chain)
     contexts << @domain_root_account if @domain_root_account
+    return [] if contexts.empty?
     Rails.cache.fetch((['editor_buttons_for'] + contexts.uniq).cache_key) do
       tools = ContextExternalTool.active.having_setting('editor_button').where(contexts.map{|context| "(context_type='#{context.class.base_class.to_s}' AND context_id=#{context.id})"}.join(" OR "))
       tools.sort_by(&:id).map do |tool|
         {
           :name => tool.label_for(:editor_button, nil),
           :id => tool.id,
-          :url => tool.settings[:editor_button][:url] || tool.url,
-          :icon_url => tool.settings[:editor_button][:icon_url] || tool.settings[:icon_url],
-          :width => tool.settings[:editor_button][:selection_width],
-          :height => tool.settings[:editor_button][:selection_height]
+          :url => tool.editor_button(:url),
+          :icon_url => tool.editor_button(:icon_url),
+          :width => tool.editor_button(:selection_width),
+          :height => tool.editor_button(:selection_height)
         }
       end
     end
@@ -595,12 +603,12 @@ module ApplicationHelper
     opts[:options_so_far] ||= []
     folders.each do |folder|
       opts[:options_so_far] << %{<option value="#{folder.id}" #{'selected' if opts[:selected_folder_id] == folder.id}>#{"&nbsp;" * opts[:indent_width] * opts[:depth]}#{"- " if opts[:depth] > 0}#{html_escape folder.name}</option>}
-      child_folders = if opts[:all_folders]
-                        opts[:all_folders].select {|f| f.parent_folder_id == folder.id }
-                      else
-                        folder.active_sub_folders.by_position
-                      end
       if opts[:max_depth].nil? || opts[:depth] < opts[:max_depth]
+        child_folders = if opts[:all_folders]
+                          opts[:all_folders].select {|f| f.parent_folder_id == folder.id }
+                        else
+                          folder.active_sub_folders.by_position
+                        end
         folders_as_options(child_folders, opts.merge({:depth => opts[:depth] + 1}))
       end
     end

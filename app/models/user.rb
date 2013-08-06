@@ -185,7 +185,7 @@ class User < ActiveRecord::Base
     PageView.for_user(self)
   end
 
-  scope :of_account, lambda { |account| joins(:user_account_associations).where(:user_account_associations => { :account_id => account }) }
+  scope :of_account, lambda { |account| where("EXISTS (#{account.user_account_associations.select("1").where("user_account_associations.user_id=users.id").to_sql})") }
   scope :recently_logged_in, lambda {
     includes(:pseudonyms).
         where("pseudonyms.current_login_at>?", 1.month.ago).
@@ -302,6 +302,8 @@ class User < ActiveRecord::Base
 
   def update_account_associations(opts = nil)
     opts ||= {:all_shards => true}
+    # incremental is only for the current shard
+    return User.update_account_associations([self], opts) if opts[:incremental]
     self.shard.activate do
       User.update_account_associations([self], opts)
     end
@@ -1036,13 +1038,15 @@ class User < ActiveRecord::Base
     end
   end
 
+  # only used by ContextModuleProgression#deep_evaluate
   def submitted_submission_for(assignment_id)
-    @submissions ||= self.submissions.having_submission.to_a
+    @submissions ||= self.submissions.having_submission.except(:includes).select([:id, :score, :assignment_id]).all
     @submissions.detect{|s| s.assignment_id == assignment_id }
   end
 
+  # only used by ContextModuleProgression#deep_evaluate
   def attempted_quiz_submission_for(quiz_id)
-    @quiz_submissions ||= self.quiz_submissions.select{|s| !s.settings_only? }
+    @quiz_submissions ||= self.quiz_submissions.select([:id, :kept_score, :quiz_id, :workflow_state]).select{|s| !s.settings_only? }
     @quiz_submissions.detect{|qs| qs.quiz_id == quiz_id }
   end
 
@@ -1279,7 +1283,6 @@ class User < ActiveRecord::Base
     preferences[:send_scores_in_emails] == true
   end
 
-
   def close_announcement(announcement)
     preferences[:closed_notifications] ||= []
     # serialize ids relative to the user
@@ -1288,6 +1291,10 @@ class User < ActiveRecord::Base
     end
     preferences[:closed_notifications].uniq!
     save
+  end
+
+  def manual_mark_as_read?
+    !!preferences[:manual_mark_as_read]
   end
 
   def ignore_item!(asset, purpose, permanent = false)
@@ -1783,9 +1790,6 @@ class User < ActiveRecord::Base
         include_submitted_count.
         map {|a| a.overridden_for(self)},opts.merge(:time => now)).
       first(opts[:limit])
-    appointment_groups = AppointmentGroup.manageable_by(self, context_codes).intersecting(now, opts[:end_at]).limit(opts[:limit])
-    appointment_groups.each { |ag| ag.context = ag.contexts_for_user(self).first }
-    events += appointment_groups
     events.sort_by{|e| [e.start_at ? 0: 1,e.start_at || 0, e.title] }.uniq.first(opts[:limit])
   end
 
@@ -1894,7 +1898,7 @@ class User < ActiveRecord::Base
   # Returns an array of context code strings.
   def conversation_context_codes(include_concluded_codes = true)
     Rails.cache.fetch([self, include_concluded_codes, 'conversation_context_codes4'].cache_key, :expires_in => 1.day) do
-      Shard.default.activate do
+      Shard.birth.activate do
         associations = %w{courses concluded_courses current_groups}
         associations.slice!(1) unless include_concluded_codes
 
@@ -1974,10 +1978,6 @@ class User < ActiveRecord::Base
   TAB_FILES = 2
   TAB_EPORTFOLIOS = 3
   TAB_HOME = 4
-
-  def sis_user_id
-    pseudonym.try(:sis_user_id)
-  end
 
   def highest_role
     return 'admin' unless self.accounts.empty?
@@ -2101,13 +2101,6 @@ class User < ActiveRecord::Base
     self.class.where(:id => id).update_all(:unread_conversations_count => conversations.unread.count)
   end
 
-  # association with dynamic, filtered join condition for submissions.
-  # This is messy, but in ActiveRecord 2 this is the only way to do an eager
-  # loading :include condition that has dynamic join conditions. It looks like
-  # there's better solutions in AR 3.
-  # See also e.g., http://makandra.com/notes/983-dynamic-conditions-for-belongs_to-has_many-and-has_one-associations
-  has_many :submissions_for_given_assignments, :include => [:assignment, :submission_comments], :conditions => 'submissions.assignment_id IN (#{Api.assignment_ids_for_students_api.join(",")})', :class_name => 'Submission'
-
   def set_menu_data(enrollment_uuid)
     return @menu_data if @menu_data
     coalesced_enrollments = []
@@ -2195,10 +2188,10 @@ class User < ActiveRecord::Base
   def find_pseudonym_for_account(account, allow_implicit = false)
     # try to find one that's already loaded if possible
     if self.pseudonyms.loaded?
-      self.pseudonyms.detect { |p| p.active? && p.works_for_account?(account, allow_implicit) }
-    else
-      self.all_active_pseudonyms.detect { |p| p.works_for_account?(account, allow_implicit) }
+      result = self.pseudonyms.detect { |p| p.active? && p.works_for_account?(account, allow_implicit) }
+      return result if result || self.associated_shards.length == 1
     end
+    self.all_active_pseudonyms.detect { |p| p.works_for_account?(account, allow_implicit) }
   end
 
   # account = the account that you want a pseudonym for
@@ -2416,5 +2409,13 @@ class User < ActiveRecord::Base
 
   def prefers_gradebook2?
     preferences[:use_gradebook2] != false
+  end
+
+  def stamp_logout_time!
+    if Rails.version < '3.0'
+      User.update_all({ :last_logged_out => Time.zone.now }, :id => self)
+    else
+      User.where(:id => self).update_all(:last_logged_out => Time.zone.now)
+    end
   end
 end

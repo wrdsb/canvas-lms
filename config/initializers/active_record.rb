@@ -333,6 +333,28 @@ class ActiveRecord::Base
     end
   end
 
+  def self.init_icu
+    return if defined?(@icu)
+    begin
+      Bundler.require 'icu'
+      if !ICU::Lib.respond_to?(:ucol_getRules)
+        suffix = ICU::Lib.figure_suffix(ICU::Lib.version.to_s)
+        ICU::Lib.attach_function(:ucol_getRules, "ucol_getRules#{suffix}", [:pointer, :pointer], :pointer)
+        ICU::Collation::Collator.class_eval do
+          def rules
+            length = FFI::MemoryPointer.new(:int)
+            ptr = ICU::Lib.ucol_getRules(@c, length)
+            ptr.read_array_of_uint16(length.read_int).pack("U*")
+          end
+        end
+      end
+      @icu = true
+      @collation_local_map = {}
+    rescue LoadError
+      @icu = false
+    end
+  end
+
   def self.best_unicode_collation_key(col)
     if ActiveRecord::Base.configurations[Rails.env]['adapter'] == 'postgresql'
       # For PostgreSQL, we can't trust a simple LOWER(column), with any collation, since
@@ -342,7 +364,19 @@ class ActiveRecord::Base
       # but at least it's consistent, and orders commas before letters so you don't end up with
       # Johnson, Bob sorting before Johns, Jimmy
       @collkey ||= connection.select_value("SELECT COUNT(*) FROM pg_proc WHERE proname='collkey'").to_i
-      @collkey == 0 ? "CAST(LOWER(replace(#{col}, '\\', '\\\\')) AS bytea)" : "collkey(#{col}, 'root', true, 2, true)"
+      if @collkey == 0
+        "CAST(LOWER(replace(#{col}, '\\', '\\\\')) AS bytea)"
+      else
+        locale = 'root'
+        init_icu
+        if @icu
+          # only use the actual locale if it differs from root; using a different locale means we
+          # can't use our index, which usually doesn't matter, but sometimes is very important
+          locale = @collation_local_map[I18n.locale] ||= ICU::Collation::Collator.new(I18n.locale.to_s).rules.empty? ? 'root' : I18n.locale
+        end
+
+        "collkey(#{col}, '#{locale}', true, 2, true)"
+      end
     else
       # Not yet optimized for other dbs (MySQL's default collation is case insensitive;
       # SQLite can have custom collations inserted, but probably not worth the effort
@@ -465,15 +499,18 @@ class ActiveRecord::Base
     Canvas::TempTable.new(connection, construct_finder_sql({}), options)
   end
 
-  def self.find_in_batches_with_temp_table(options = {})
-    generate_temp_table(options).execute! do |table|
-      table.find_in_batches(options) { |batch| yield batch }
+  def self.find_in_batches_with_temp_table(options = {}, &block)
+    temptable = generate_temp_table(options)
+    with_exclusive_scope do
+      temptable.execute do |table|
+        table.find_in_batches(options, &block)
+      end
     end
   end
 
-  def self.find_each_with_temp_table(options = {})
+  def self.find_each_with_temp_table(options = {}, &block)
     find_in_batches_with_temp_table(options) do |batch|
-      batch.each { |record| yield record }
+      batch.each(&block)
     end
     self
   end
@@ -852,10 +889,19 @@ if defined?(ActiveRecord::ConnectionAdapters::PostgreSQLAdapter)
       raise ArgumentError, "Cannot specify custom options with :delay_validation" if options[:options] && options[:delay_validation]
 
       options.delete(:delay_validation) unless supports_delayed_constraint_validation?
-      options[:options] = 'NOT VALID' if options[:delay_validation]
-
+      # pointless if we're in a transaction
+      options.delete(:delay_validation) if open_transactions > 0
       column  = options[:column] || "#{to_table.to_s.singularize}_id"
       foreign_key_name = foreign_key_name(from_table, column, options)
+
+      if options[:delay_validation]
+        options[:options] = 'NOT VALID'
+        # NOT VALID doesn't fully work through 9.3 at least, so prime the cache to make
+        # it as fast as possible. Note that a NOT EXISTS would be faster, but this is
+        # the query postgres does for the VALIDATE CONSTRAINT, so we want exactly this
+        # query to be warm
+        execute("SELECT fk.#{column} FROM #{from_table} fk LEFT OUTER JOIN #{to_table} pk ON fk.#{column}=pk.id WHERE pk.id IS NULL AND fk.#{column} IS NOT NULL LIMIT 1")
+      end
 
       add_foreign_key_without_delayed_validation(from_table, to_table, options)
 
@@ -892,6 +938,11 @@ if defined?(ActiveRecord::ConnectionAdapters::PostgreSQLAdapter)
 
       execute "CREATE #{index_type} INDEX #{concurrently}#{quote_column_name(index_name)} ON #{quote_table_name(table_name)} (#{quoted_column_names})#{conditions}"
     end
+
+    def set_standard_conforming_strings_with_version_check
+      set_standard_conforming_strings_without_version_check unless postgresql_version >= 90100
+    end
+    alias_method_chain :set_standard_conforming_strings, :version_check
   end
 
 end
@@ -1235,16 +1286,15 @@ ActiveRecord::ConnectionAdapters::SchemaStatements.class_eval do
   # in anticipation of having to re-run migrations due to integrity violations or
   # killing stuff that is holding locks too long
   def add_foreign_key_if_not_exists(from_table, to_table, options = {})
+    column  = options[:column] || "#{to_table.to_s.singularize}_id"
     case self.adapter_name
     when 'SQLite'; return
     when 'PostgreSQL'
-      begin
-        add_foreign_key(from_table, to_table, options)
-      rescue ActiveRecord::StatementInvalid => e
-        raise unless e.message =~ /PG(?:::)?Error: ERROR:.+already exists/
-      end
+      foreign_key_name = foreign_key_name(from_table, column, options)
+      and_valid = " AND convalidated" if supports_delayed_constraint_validation?
+      return if select_value("SELECT conname FROM pg_constraint INNER JOIN pg_namespace ON pg_namespace.oid=connamespace WHERE conname='#{foreign_key_name}' AND nspname=current_schema()#{and_valid}")
+      add_foreign_key(from_table, to_table, options)
     else
-      column  = options[:column] || "#{to_table.to_s.singularize}_id"
       foreign_key_name = foreign_key_name(from_table, column, options)
       return if foreign_keys(from_table).find { |k| k.options[:name] == foreign_key_name }
       add_foreign_key(from_table, to_table, options)

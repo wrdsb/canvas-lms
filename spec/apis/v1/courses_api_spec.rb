@@ -63,6 +63,10 @@ describe Api::V1::Course do
       @test_api.course_json(@course1, @me, {}, ['needs_grading_count'], [@designer_enrollment]).has_key?("needs_grading_count").should be_false
     end
 
+    it 'should include apply_assignment_group_weights' do
+      @test_api.course_json(@course1, @me, {}, [], []).has_key?("apply_assignment_group_weights").should be_true
+    end
+
     context "total_scores" do
       before do
         @enrollment.computed_current_score = 95.0;
@@ -197,7 +201,6 @@ describe CoursesController, :type => :integration do
             'course_code'                          => 'Test Course',
             'start_at'                             => '2011-01-01T00:00:00-0700',
             'end_at'                               => '2011-05-01T00:00:00-0700',
-            'publish_grades_immediately'           => true,
             'is_public'                            => true,
             'public_syllabus'                      => true,
             'allow_wiki_comments'                  => true,
@@ -206,6 +209,7 @@ describe CoursesController, :type => :integration do
             'self_enrollment'                      => true,
             'restrict_enrollments_to_course_dates' => true,
             'hide_final_grades'                     => true,
+            'apply_assignment_group_weights'       => true,
             'license'                              => 'Creative Commons',
             'sis_course_id'                        => '12345',
             'public_description'                   => 'Nature is lethal but it doesn\'t hold a candle to man.',
@@ -217,11 +221,12 @@ describe CoursesController, :type => :integration do
           'start_at' => '2011-01-01T07:00:00Z',
           'end_at' => '2011-05-01T07:00:00Z',
           'workflow_state' => 'available',
-          'default_view' => 'feed'
+          'default_view' => 'feed',
+          'storage_quota_mb' => @account.default_storage_quota_mb
         })
         json = api_call(:post, @resource_path, @resource_params, post_params)
         new_course = Course.find(json['id'])
-        [:name, :course_code, :start_at, :end_at, :publish_grades_immediately,
+        [:name, :course_code, :start_at, :end_at,
         :is_public, :public_syllabus, :allow_wiki_comments,
         :open_enrollment, :self_enrollment, :license, :sis_course_id,
         :allow_student_forum_attachments, :public_description,
@@ -267,7 +272,16 @@ describe CoursesController, :type => :integration do
         new_course = Course.find(json['id'])
         new_course.sis_source_id.should == '9999'
       end
-      
+
+      it "should set the apply_assignment_group_weights flag" do
+        json = api_call(:post, @resource_path,
+          @resource_params,
+          { :account_id => @account.id, :course => { :name => 'Test Course', :apply_assignment_group_weights => true } }
+        )
+        new_course = Course.find(json['id'])
+        new_course.apply_group_weights?.should be_true
+      end
+
       it "should set the storage quota" do
         json = api_call(:post, @resource_path,
                         @resource_params,
@@ -346,6 +360,7 @@ describe CoursesController, :type => :integration do
         'open_enrollment' => true,
         'self_enrollment' => true,
         'hide_final_grades' => false,
+        'apply_assignment_group_weights' => true,
         'restrict_enrollments_to_course_dates' => true,
         'default_view' => 'new default view'
       }, 'offer' => true }
@@ -378,6 +393,7 @@ describe CoursesController, :type => :integration do
         @course.self_enrollment.should be_true
         @course.restrict_enrollments_to_course_dates.should be_true
         @course.workflow_state.should == 'available'
+        @course.apply_group_weights?.should == true
         @course.default_view.should == 'new default view'
       end
 
@@ -410,6 +426,14 @@ describe CoursesController, :type => :integration do
         @course.reload
         @course.storage_quota_mb.should == 123
       end
+
+      it "should update the apply_assignment_group_weights flag from true to false" do
+        @course.apply_assignment_group_weights = true
+        @course.save
+        json = api_call(:put, @path, @params, :course => { :apply_assignment_group_weights =>  false})
+        @course.reload
+        @course.apply_group_weights?.should be_false
+      end
     end
 
     context "a teacher" do
@@ -428,6 +452,7 @@ describe CoursesController, :type => :integration do
         json['start_at'].should eql @new_values['course']['start_at']
         json['end_at'].should eql @new_values['course']['end_at']
         json['default_view'].should eql @new_values['course']['default_view']
+        json['apply_assignment_group_weights'].should eql @new_values['course']['apply_assignment_group_weights']
       end
 
       it 'should process html content in syllabus_body on update' do
@@ -837,7 +862,79 @@ describe CoursesController, :type => :integration do
     end
   end
 
-  describe "students" do
+  describe "course state" do
+    before do
+      @course3 = course
+      @course3.enroll_user(@me, 'TeacherEnrollment', { :role_name => 'SuperTeacher', :active_all => true })
+      @course4 = course
+      @course4.enroll_user(@me, 'TaEnrollment')
+      @course4.workflow_state = 'created'
+      @course4.save
+    end
+    
+    it "should return only courses with state available on ?state[]=available" do
+      json = api_call(:get, "/api/v1/courses.json",
+                      { :controller => 'courses', :action => 'index', :format => 'json' },
+                      { :state => ['available'] })
+      json.collect{ |c| c['id'].to_i }.sort.should == [@course1.id, @course2.id].sort
+      json.collect{ |c| c['workflow_state']}.each do |s|
+        %w{available}.should include(s)
+      end
+    end
+
+    it "should return only courses with state unpublished on ?state[]=unpublished" do
+      json = api_call(:get, "/api/v1/courses.json",
+                      { :controller => 'courses', :action => 'index', :format => 'json' },
+                      { :state => ['unpublished'] })
+      json.collect{ |c| c['id'].to_i }.sort.should == [@course3.id,@course4.id].sort
+      json.collect{ |c| c['workflow_state']}.each do |s|
+        %w{unpublished}.should include(s)
+      end
+    end
+
+    it "should return only courses with state unpublished and available on ?state[]=unpublished, available" do
+      json = api_call(:get, "/api/v1/courses.json",
+                      { :controller => 'courses', :action => 'index', :format => 'json' },
+                      { :state => ['unpublished','available'] })
+      json.collect{ |c| c['id'].to_i }.sort.should == [@course1.id, @course2.id, @course3.id, @course4.id].sort
+      json.collect{ |c| c['workflow_state']}.each do |s|
+        %w{available unpublished}.should include(s)
+      end
+    end
+
+    it "should return courses by custom role and state unpublished" do
+      json = api_call(:get, "/api/v1/courses.json?enrollment_role=SuperTeacher",
+                      { :controller => 'courses', :action => 'index', :format => 'json', :enrollment_role => 'SuperTeacher' },
+                      { :state => ['unpublished'] })
+      json.collect{ |c| c['id'].to_i }.should == [@course3.id]
+      json[0]['enrollments'].should == [{ 'type' => 'teacher', 'role' => 'SuperTeacher' }]
+      json.collect{ |c| c['workflow_state']}.each do |s|
+        %w{unpublished}.should include(s)
+      end
+    end
+
+    it "should not return courses with StudentEnrollment or ObserverEnrollment when state[] param" do
+      @course4.enrollments.each do |e|
+        e.type = 'StudentEnrollment'
+        e.save
+      end
+      json = api_call(:get, "/api/v1/courses.json",
+                      { :controller => 'courses', :action => 'index', :format => 'json' },
+                      { :state => ['unpublished'] })
+      json.collect{ |c| c['id'].to_i }.sort.should ==[@course3.id]
+
+      @course3.enrollments.each do |e|
+        e.type = 'ObserverEnrollment'
+        e.save
+      end
+      json = api_call(:get, "/api/v1/courses.json",
+                      { :controller => 'courses', :action => 'index', :format => 'json' },
+                      { :state => ['unpublished'] })
+      json.collect{ |c| c['id'].to_i }.should ==[]
+    end
+  end
+
+  describe "/students" do
     it "should return the list of students for the course" do
       first_user = @user
       new_user = User.create!(:name => 'Zombo')
@@ -1377,6 +1474,8 @@ describe CoursesController, :type => :integration do
         'default_view' => @course1.default_view,
         'public_syllabus' => @course1.public_syllabus,
         'workflow_state' => @course1.workflow_state,
+        'storage_quota_mb' => @course1.storage_quota_mb,
+        'apply_assignment_group_weights' => false
       }
     end
 
@@ -1595,6 +1694,51 @@ describe CoursesController, :type => :integration do
       json.map{ |el| el['id'] }.should == [@student2.id, @student3.id, @student1.id]
     end
   end
+
+  describe "/preview_html" do
+    before do
+      course_with_teacher_logged_in(:active_all => true)
+    end
+
+    it "should sanitize html and process links" do
+      @user = @teacher
+      attachment_model(:context => @course)
+      html = %{<p><a href="/files/#{@attachment.id}/download?verifier=huehuehuehue">Click!</a><script></script></p>}
+      json = api_call(:post, "/api/v1/courses/#{@course.id}/preview_html",
+                      { :controller => 'courses', :action => 'preview_html', :course_id => @course.to_param, :format => 'json' },
+                      { :html => html})
+
+      returned_html = json["html"]
+      returned_html.should_not include("<script>")
+      returned_html.should include("/courses/#{@course.id}/files/#{@attachment.id}/download?verifier=#{@attachment.uuid}")
+    end
+
+    it "should require permission to preview" do
+      @user = user
+      api_call(:post, "/api/v1/courses/#{@course.id}/preview_html",
+                      { :controller => 'courses', :action => 'preview_html', :course_id => @course.to_param, :format => 'json' },
+                      { :html => ""}, {}, {:expected_status => 401})
+
+    end
+  end
+
+  it "should return the activity stream" do
+    course_with_teacher(:active_all => true, :user => user_with_pseudonym)
+    @context = @course
+    @topic1 = discussion_topic_model
+    json = api_call(:get, "/api/v1/courses/#{@course.id}/activity_stream.json",
+                    { controller: "courses", course_id: @course.id.to_s, action: "activity_stream", format: 'json' })
+    json.size.should == 1
+  end
+
+  it "should return the activity stream summary" do
+    course_with_teacher(:active_all => true, :user => user_with_pseudonym)
+    @context = @course
+    @topic1 = discussion_topic_model
+    json = api_call(:get, "/api/v1/courses/#{@course.id}/activity_stream/summary.json",
+                    { controller: "courses", course_id: @course.id.to_s, action: "activity_stream_summary", format: 'json' })
+    json.should == [{"type" => "DiscussionTopic", "count" => 1, "unread_count" => 1, "notification_category" => nil}]
+  end
 end
 
 def each_copy_option
@@ -1649,8 +1793,8 @@ describe ContentImportsController, :type => :integration do
 
     api_call(:get, status_url, { :controller => 'content_imports', :action => 'copy_course_status', :course_id => @copy_to.to_param, :id => data['id'].to_param, :format => 'json' })
     (JSON.parse(response.body)).tap do |res|
-      res['workflow_state'].should == 'created'
-      res['progress'].should be_nil
+      res['workflow_state'].should == 'started'
+      res['progress'].should == 0
     end
 
     run_jobs

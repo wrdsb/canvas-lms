@@ -47,6 +47,7 @@ module Kaltura
       if @cache_play_list_seconds = config['cache_play_list_seconds']
         @cache_play_list_seconds = @cache_play_list_seconds.to_i
       end
+      @kaltura_sis = config['kaltura_sis']
     end
 
     def self.config
@@ -236,7 +237,7 @@ module Kaltura
       data = {}
       data[:result] = result
       url = result.css('logFileUrl')[0].content
-      csv = FasterCSV.parse(Canvas::HTTP.get(url).body)
+      csv = CSV.parse(Canvas::HTTP.get(url).body)
       data[:entries] = []
       csv.each do |row|
         data[:entries] << {
@@ -267,9 +268,9 @@ module Kaltura
         filename = (file[:name] || "Media File").gsub(/,/, "")
         description = (file[:description] || "no description").gsub(/,/, "")
         url = file[:url]
-        rows << [filename, description, file[:tags] || "", url, file[:media_type] || "video", '', '', '' ,'' ,'' ,'' ,file[:id] || ''] if file[:url]
+        rows << [filename, description, file[:tags] || "", url, file[:media_type] || "video", '', '', '' ,'' ,'' ,'' ,file[:partner_data] || ''] if file[:url]
       end
-      res = FasterCSV.generate do |csv|
+      res = CSV.generate do |csv|
         rows.each do |row|
           csv << row
         end

@@ -91,7 +91,10 @@ require 'set'
 #         name: 'Default Term',
 #         start_at: "2012-06-01T00:00:00-06:00",
 #         end_at: null
-#       }
+#       },
+#
+#       // weight final grade based on assignment group percentages
+#       apply_assignment_group_weights: true
 #
 #   }
 class CoursesController < ApplicationController
@@ -143,6 +146,11 @@ class CoursesController < ApplicationController
   #   When term is given, the information for the enrollment term for each course
   #   is returned.
   #
+  # @argument state[] [optional] If set, only return courses that are in the given state(s).
+  #   Valid states are "unpublished", "available", "completed", and "deleted".
+  #   By default, "available" is returned for students and observers, and
+  #   anything except "deleted", for all other enrollment types
+  #
   # @returns [Course]
   def index
     respond_to do |format|
@@ -159,7 +167,14 @@ class CoursesController < ApplicationController
       }
 
       format.json {
-        enrollments = @current_user.cached_current_enrollments
+        if params[:state]
+          params[:state] += %w(created claimed) if params[:state].include? 'unpublished'
+          enrollments = @current_user.enrollments
+          enrollments = enrollments.reject { |e| !params[:state].include?(e.course.workflow_state) || (%w(StudentEnrollment ObserverEnrollment).include?(e.type) && %w(created claimed).include?(e.course.workflow_state))}
+        else
+          enrollments = @current_user.cached_current_enrollments
+        end
+
         if params[:enrollment_role]
           enrollments = enrollments.reject { |e| (e.role_name || e.class.name) != params[:enrollment_role] }
         elsif params[:enrollment_type]
@@ -200,6 +215,7 @@ class CoursesController < ApplicationController
   # @argument course[enroll_me] [Boolean] [optional] Set to true to enroll the current user as the teacher.
   # @argument course[sis_course_id] [String] [optional] The unique SIS identifier.
   # @argument course[hide_final_grades] [Boolean] [optional] If this option is set to true, the totals in student grades summary will be hidden.
+  # @argument course[apply_assignment_group_weights] [Boolean] Set to true to weight final grade based on assignment groups percentages
   # @argument offer [Boolean] [optional] If this option is set to true, the course will be available to students immediately.
   #
   # @returns Course
@@ -221,6 +237,7 @@ class CoursesController < ApplicationController
       end
 
       sis_course_id = params[:course].delete(:sis_course_id)
+      apply_assignment_group_weights = params[:course].delete(:apply_assignment_group_weights)
 
       # accept end_at as an alias for conclude_at. continue to accept
       # conclude_at for legacy support, and return conclude_at only if
@@ -236,9 +253,14 @@ class CoursesController < ApplicationController
         params[:course].delete :storage_quota
         params[:course].delete :storage_quota_mb
       end
-      
+
       @course = (@sub_account || @account).courses.build(params[:course])
       @course.sis_source_id = sis_course_id if api_request? && @account.grants_right?(@current_user, :manage_sis)
+
+      if apply_assignment_group_weights
+        @course.apply_assignment_group_weights = value_to_boolean apply_assignment_group_weights
+      end
+
       respond_to do |format|
         if @course.save
           @course.enroll_user(@current_user, 'TeacherEnrollment', :enrollment_state => 'active') if params[:enroll_me].to_s == 'true'
@@ -249,7 +271,7 @@ class CoursesController < ApplicationController
             @course,
             @current_user,
             session,
-            [:start_at, course_end, :license, :publish_grades_immediately,
+            [:start_at, course_end, :license,
              :is_public, :public_syllabus, :allow_student_assignment_edits, :allow_wiki_comments,
              :allow_student_forum_attachments, :open_enrollment, :self_enrollment,
              :root_account_id, :account_id, :public_description,
@@ -382,7 +404,7 @@ class CoursesController < ApplicationController
       end
 
       if search_term
-        users = UserSearch.for_user_in_course(search_term, @context, @current_user, search_params)
+        users = UserSearch.for_user_in_context(search_term, @context, @current_user, search_params)
       else
         users = UserSearch.scope_for(@context, @current_user, search_params)
       end
@@ -498,6 +520,29 @@ class CoursesController < ApplicationController
     end
   end
 
+  include Api::V1::PreviewHtml
+  # @API Preview processed html
+  #
+  # Preview html content processed for this course
+  #
+  # @argument html The html content to process
+  #
+  # @example_request
+  #     curl https://<canvas>/api/v1/courses/<course_id>/preview_html \
+  #          -F 'html=<p><badhtml></badhtml>processed html</p>' \
+  #          -H 'Authorization: Bearer <token>'
+  #
+  # @example_response
+  #   {
+  #     "html": "<p>processed html</p>"
+  #   }
+  def preview_html
+    get_context
+    if @context && authorized_action(@context, @current_user, :read)
+      render_preview_html
+    end
+  end
+
   include Api::V1::StreamItem
   # @API Course activity stream
   # Returns the current user's course-specific activity stream, paginated.
@@ -508,6 +553,18 @@ class CoursesController < ApplicationController
     get_context
     if authorized_action(@context, @current_user, :read)
       api_render_stream_for_contexts([@context], :api_v1_course_activity_stream_url)
+    end
+  end
+
+  # @API Course activity stream summary
+  # Returns a summary of the current user's course-specific activity stream.
+  #
+  # For full documentation, see the API documentation for the user activity
+  # stream summary, in the user api.
+  def activity_stream_summary
+    get_context
+    if authorized_action(@context, @current_user, :read)
+      api_render_stream_summary([@context])
     end
   end
 
@@ -644,6 +701,9 @@ class CoursesController < ApplicationController
       @alerts = @context.alerts
       @role_types = []
       add_crumb(t('#crumbs.settings', "Settings"), named_context_url(@context, :context_details_url))
+      js_env :APP_CENTER => {
+        enabled: Canvas::Plugin.find(:app_center).enabled?
+      }
     end
   end
 
@@ -1019,10 +1079,6 @@ class CoursesController < ApplicationController
     if is_authorized_action?(@context, @current_user, :read)
       check_incomplete_registration
 
-      if @current_user && @context.grants_right?(@current_user, session, :manage_grades)
-        @assignments_needing_publishing = @context.assignments.active.need_publishing || []
-      end
-
       add_crumb(@context.short_name, url_for(@context), :id => "crumb_#{@context.asset_string}")
       set_badge_counts_for(@context, @current_user, @current_enrollment)
 
@@ -1032,7 +1088,7 @@ class CoursesController < ApplicationController
       case @course_home_view
       when "wiki"
         @wiki = @context.wiki
-        @page = @wiki.wiki_page
+        @page = @wiki.front_page
       when 'assignments'
         add_crumb(t('#crumbs.assignments', "Assignments"))
         get_sorted_assignments
@@ -1273,6 +1329,9 @@ class CoursesController < ApplicationController
     authorized_action(@context, @current_user, :read) &&
       authorized_action(@context, @current_user, :read_as_admin) &&
       authorized_action(@domain_root_account.manually_created_courses_account, @current_user, [:create_courses, :manage_courses])
+    # For prepopulating the date fields
+    js_env(:OLD_START_DATE => datetime_string(@context.start_at, :verbose, nil, true))
+    js_env(:OLD_END_DATE => datetime_string(@context.conclude_at, :verbose, nil, true))
   end
 
   def copy_course
@@ -1301,7 +1360,26 @@ class CoursesController < ApplicationController
       @course.workflow_state = 'claimed'
       @course.save
       @course.enroll_user(@current_user, 'TeacherEnrollment', :enrollment_state => 'active')
-      redirect_to course_import_choose_content_url(@course, 'source_course' => @context.id)
+
+      @content_migration = @course.content_migrations.build(:user => @current_user, :context => @course, :migration_type => 'course_copy_importer')
+      @content_migration.migration_settings[:source_course_id] = @context.id
+      @content_migration.workflow_state = 'created'
+      @content_migration.set_date_shift_options(params[:date_shift_options])
+
+      if Canvas::Plugin.value_to_boolean(params[:selective_import])
+        @content_migration.migration_settings[:import_immediately] = false
+        @content_migration.workflow_state = 'exported'
+        @content_migration.save
+      else
+        @content_migration.migration_settings[:import_immediately] = true
+        @content_migration.copy_options = {:everything => true}
+        @content_migration.migration_settings[:migration_ids_to_import] = {:copy => {:everything => true}}
+        @content_migration.workflow_state = 'importing'
+        @content_migration.save
+        @content_migration.queue_migration
+      end
+
+      redirect_to course_content_migrations_url(@course)
     end
   end
 
@@ -1373,13 +1451,16 @@ class CoursesController < ApplicationController
           end
         end
       end
+      if params[:course].has_key?(:apply_assignment_group_weights)
+        @course.apply_assignment_group_weights = value_to_boolean params[:course].delete(:apply_assignment_group_weights)
+      end
       params[:course][:event] = :offer if params[:offer].present?
 
       lock_announcements = params[:course].delete(:lock_all_announcements)
       if value_to_boolean(lock_announcements)
         @course.lock_all_announcements = true
         Announcement.where(:context_type => 'Course', :context_id => @course, :workflow_state => 'active').
-            update_all(:workflow_state => 'locked')
+            update_all(:locked => true)
       elsif @course.lock_all_announcements
         @course.lock_all_announcements = false
       end

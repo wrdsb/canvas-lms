@@ -500,7 +500,8 @@ describe User do
         @shard1.activate do
           alice = User.create!(:name => 'alice')
           bob = User.create!(:name => 'bob')
-          courseX = Course.new
+          account = Account.create!
+          courseX = account.courses.build
           courseX.workflow_state = 'available'
           courseX.save!
           bobs_enrollment = StudentEnrollment.create!(:course => courseX, :user => bob, :workflow_state => 'completed')
@@ -508,7 +509,8 @@ describe User do
         end
 
         @shard2.activate do
-          courseY = Course.new
+          account = Account.create!
+          courseY = account.courses.build
           courseY.workflow_state = 'available'
           courseY.save!
           alices_enrollment = StudentEnrollment.new(:course => courseY, :user => alice, :workflow_state => 'active')
@@ -523,7 +525,8 @@ describe User do
         alice = nil
         @shard1.activate do
           alice = User.create!(:name => 'alice')
-          courseX = Course.new
+          account = Account.create!
+          courseX = account.courses.build
           courseX.workflow_state = 'available'
           courseX.save!
           StudentEnrollment.create!(:course => courseX, :user => alice, :workflow_state => 'completed')
@@ -1028,7 +1031,7 @@ describe User do
   context "tabs_available" do
     it "should not include unconfigured external tools" do
       tool = Account.default.context_external_tools.new(:consumer_key => 'bob', :shared_secret => 'bob', :name => 'bob', :domain => "example.com")
-      tool.settings[:course_navigation] = {:url => "http://www.example.com", :text => "Example URL"}
+      tool.course_navigation = {:url => "http://www.example.com", :text => "Example URL"}
       tool.save!
       tool.has_user_navigation.should == false
       user_model
@@ -1038,7 +1041,7 @@ describe User do
 
     it "should include configured external tools" do
       tool = Account.default.context_external_tools.new(:consumer_key => 'bob', :shared_secret => 'bob', :name => 'bob', :domain => "example.com")
-      tool.settings[:user_navigation] = {:url => "http://www.example.com", :text => "Example URL"}
+      tool.user_navigation = {:url => "http://www.example.com", :text => "Example URL"}
       tool.save!
       tool.has_user_navigation.should == true
       user_model
@@ -1563,15 +1566,6 @@ describe User do
     end
 
     describe "upcoming_events" do
-      it "should include manageable appointment groups" do
-        course(:active_all => true)
-        @user = @course.instructors.first
-        ag = AppointmentGroup.create!(:title => 'test appointment', :contexts => [@course], :new_appointments => [[Time.now, Time.now + 1.hour]])
-        events = @user.upcoming_events
-        events.size.should eql 1
-        events.first.title.should eql 'test appointment'
-      end
-
       it "handles assignments where the applied due_at is nil" do
         course_with_teacher_logged_in(:active_all => true)
         assignment = @course.assignments.create!(:title => "Should not throw",
@@ -1749,6 +1743,23 @@ describe User do
       User.create!(:name => "John Johnson")
       User.create!(:name => "John John")
       User.select([:id, :sortable_name]).order_by_sortable_name(:direction => :descending).all.map(&:sortable_name).should == ["Johnson, John", "John, John"]
+    end
+
+    it "should sort by the current locale with pg_collkey if possible" do
+      pending "requires postgres" unless User.connection.adapter_name == 'PostgreSQL'
+      pending "requires pg_collkey on the server" if User.connection.select_value("SELECT COUNT(*) FROM pg_proc WHERE proname='collkey'").to_i == 0
+      begin
+        Bundler.require 'icu'
+      rescue LoadError
+        pending "requires icu locally"
+      end
+      I18n.locale = :es
+      User.sortable_name_order_by_clause.should match /es/
+      User.sortable_name_order_by_clause.should_not match /root/
+      # english has no specific sorting rules, so use root
+      I18n.locale = :en
+      User.sortable_name_order_by_clause.should_not match /es/
+      User.sortable_name_order_by_clause.should match /root/
     end
   end
 
@@ -2142,6 +2153,25 @@ describe User do
     end
   end
 
+  describe "manual_mark_as_read" do
+    let(:user) { User.new }
+    subject { user.manual_mark_as_read? }
+
+    context 'default' do
+      it { should be_false }
+    end
+
+    context 'after being set to true' do
+      before { user.stubs(preferences: { manual_mark_as_read: true }) }
+      it     { should be_true }
+    end
+
+    context 'after being set to false' do
+      before { user.stubs(preferences: { manual_mark_as_read: false }) }
+      it     { should be_false }
+    end
+  end
+
   describe "things excluded from json serialization" do
     it "excludes collkey" do
       # Ruby 1.9 does not like html that includes the collkey, so
@@ -2266,6 +2296,27 @@ describe User do
         course_with_student(:account => @shard1_account, :user => @user, :active_all => true)
         default_asset_string = @course.asset_string
         @shard1.activate{ @user.conversation_context_codes.should include(default_asset_string) }
+      end
+    end
+  end
+
+  describe "#stamp_logout_time!" do
+    before do
+      user_model
+    end
+
+    it "should update last_logged_out" do
+      now = Time.zone.now
+      Timecop.freeze(now) { @user.stamp_logout_time! }
+      @user.reload.last_logged_out.to_i.should == now.to_i
+    end
+
+    context "sharding" do
+      specs_require_sharding
+
+      it "should update regardless of current shard" do
+        @shard1.activate{ @user.stamp_logout_time! }
+        @user.reload.last_logged_out.should_not be_nil
       end
     end
   end

@@ -18,13 +18,14 @@
 module Api::V1::ContextModule
   include Api::V1::Json
   include Api::V1::User
+  include Api::V1::ExternalTools::UrlHelpers
 
-  MODULE_JSON_ATTRS = %w(id position name unlock_at workflow_state)
+  MODULE_JSON_ATTRS = %w(id position name unlock_at)
 
   MODULE_ITEM_JSON_ATTRS = %w(id position title indent)
 
   # optionally pass progression to include 'state', 'completed_at'
-  def module_json(context_module, current_user, session, progression = nil)
+  def module_json(context_module, current_user, session, progression = nil, includes = [])
     hash = api_json(context_module, current_user, session, :only => MODULE_JSON_ATTRS)
     hash['require_sequential_progress'] = !!context_module.require_sequential_progress
     hash['prerequisite_module_ids'] = context_module.prerequisites.reject{|p| p[:type] != 'context_module'}.map{|p| p[:id]}
@@ -32,12 +33,23 @@ module Api::V1::ContextModule
       hash['state'] = progression.workflow_state
       hash['completed_at'] = progression.completed_at
     end
+    has_update_rights = context_module.grants_right?(current_user, :update)
+    hash['published'] = context_module.active? if has_update_rights
+    tags = context_module.content_tags_visible_to(@current_user)
+    count = tags.count
+    hash['items_count'] = count
+    hash['items_url'] = polymorphic_url([:api_v1, context_module.context, context_module, :items])
+    if includes.include?('items') && count <= Setting.get_cached('api_max_per_page', '50').to_i
+      hash['items'] = tags.map do |tag|
+        module_item_json(tag, current_user, session, context_module, progression, :has_update_rights => has_update_rights)
+      end
+    end
     hash
   end
 
   # optionally pass context_module to avoid redundant queries when rendering multiple items
   # optionally pass progression to include completion status
-  def module_item_json(content_tag, current_user, session, context_module = nil, progression = nil)
+  def module_item_json(content_tag, current_user, session, context_module = nil, progression = nil, opts = {})
     context_module ||= content_tag.context_module
 
     hash = api_json(content_tag, current_user, session, :only => MODULE_ITEM_JSON_ATTRS)
@@ -54,6 +66,16 @@ module Api::V1::ContextModule
           course_context_modules_item_redirect_url(:id => content_tag.id)
       end
     end
+    
+    # add content_id, if applicable
+    # (note that wiki page ids are not exposed by the api)
+    unless %w(WikiPage ContextModuleSubHeader ExternalUrl).include? content_tag.content_type
+      hash['content_id'] = content_tag.content_id
+    end
+
+    if content_tag.content_type == 'WikiPage'
+      hash['page_url'] = content_tag.content.url
+    end
 
     # add data-api-endpoint link, if applicable
     api_url = nil
@@ -64,8 +86,16 @@ module Api::V1::ContextModule
       # no context
       when 'Attachment'
         api_url = polymorphic_url([:api_v1, content_tag.content])
+      when 'ContextExternalTool'
+        api_url = sessionless_launch_url(context_module.context, :url => content_tag.url)
     end
     hash['url'] = api_url if api_url
+
+    # add external_url, if applicable
+    hash['external_url'] = content_tag.url if ['ExternalUrl', 'ContextExternalTool'].include?(content_tag.content_type)
+
+    # add new_tab, if applicable
+    hash['new_tab'] = content_tag.new_tab if content_tag.content_type == 'ContextExternalTool'
 
     # add completion requirements
     if criterion = context_module.completion_requirements && context_module.completion_requirements.detect { |r| r[:id] == content_tag.id }
@@ -74,6 +104,13 @@ module Api::V1::ContextModule
       ch['completed'] = !!progression.requirements_met.detect{|r|r[:type] == criterion[:type] && r[:id] == content_tag.id} if progression && progression.requirements_met.present?
       hash['completion_requirement'] = ch
     end
+
+    has_update_rights = if opts.has_key? :has_update_rights
+      opts[:has_update_rights]
+    else
+      context_module.grants_right?(current_user, :update)
+    end
+    hash['published'] = content_tag.active? if has_update_rights
 
     hash
   end
