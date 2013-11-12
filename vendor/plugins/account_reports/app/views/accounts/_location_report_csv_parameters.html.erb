@@ -1,0 +1,45 @@
+<% Struct.new("SWSCourse", :code_prefix, :name) %>
+<% Struct.new("SWSLocation", :code, :name) %>
+
+<% @sws_courses = [
+  Struct::SWSCourse.new('ANA2013-', "Anaphylaxis Training (Sabrina's Law) 2013/2014"),
+  Struct::SWSCourse.new('VH2013-', 'Violence and Harassment in the Workplace 2013/2014'),
+  Struct::SWSCourse.new('WHMISG2013-', 'WHMIS 2013/2014'),
+  Struct::SWSCourse.new('WHMISC2013-', 'WHMIS - Custodial and Maintenance 2013/2014'),
+  Struct::SWSCourse.new('WHMISS2013-', 'WHMIS - Science 2013/2014')
+] %>
+
+<%
+  users = User.find(:all, :group => 'school_name')
+  @sws_locations = Array.new
+  users.each do |user|
+    if user.school_name != nil
+      location_code = user.school_name[(user.school_name.index('(')+1)..(user.school_name.index(')')-1)]
+      location_name = user.school_name[0..(user.school_name.index('(')-2)]
+      @sws_locations << Struct::SWSLocation.new(location_code, location_name)
+    end
+  end
+%>
+
+<table>
+  <tr>
+    <td>Course:</td>
+    <td>
+      <select name="parameters[report_course]">
+        <% @sws_courses.each do |course| %>
+          <option value="<%= course.code_prefix %>"><%= course.name %></option>
+        <% end %>
+      </select>
+    </td>
+  </tr>
+  <tr>
+    <td>Location:</td>
+    <td>
+      <select name="parameters[report_location]">
+        <% @sws_locations.each do |location| %>
+          <option value="<%= location.code %>"><%= location.name %></option>
+        <% end %>
+      </select>
+    </td>
+  </tr>
+</table>

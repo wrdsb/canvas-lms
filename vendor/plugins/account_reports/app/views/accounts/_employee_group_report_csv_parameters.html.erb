@@ -1,0 +1,43 @@
+<% Struct.new("SWSCourse", :code_prefix, :name) %>
+<% Struct.new("SWSAssociation", :code, :name) %>
+
+<% @sws_courses = [
+  Struct::SWSCourse.new('ANA2013-', "Anaphylaxis Training (Sabrina's Law) 2013/2014"),
+  Struct::SWSCourse.new('VH2013-', 'Violence and Harassment in the Workplace 2013/2014'),
+  Struct::SWSCourse.new('WHMISG2013-', 'WHMIS 2013/2014'),
+  Struct::SWSCourse.new('WHMISC2013-', 'WHMIS - Custodial and Maintenance 2013/2014'),
+  Struct::SWSCourse.new('WHMISS2013-', 'WHMIS - Science 2013/2014')
+] %>
+
+<%
+  users = User.find(:all, :group => 'phone')
+  @sws_associations = Array.new
+  users.each do |user|
+    code = user.phone
+    name = user.phone
+    @sws_associations << Struct::SWSAssociation.new(code, name)
+  end
+%>
+
+<table>
+  <tr>
+    <td>Course:</td>
+    <td>
+      <select name="parameters[report_course]">
+        <% @sws_courses.each do |course| %>
+          <option value="<%= course.code_prefix %>"><%= course.name %></option>
+        <% end %>
+      </select>
+    </td>
+  </tr>
+  <tr>
+    <td>Association:</td>
+    <td>
+      <select name="parameters[report_association]">
+        <% @sws_associations.each do |association| %>
+          <option value="<%= association.code %>"><%= association.name %></option>
+        <% end %>
+      </select>
+    </td>
+  </tr>
+</table>

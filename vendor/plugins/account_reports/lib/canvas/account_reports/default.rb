@@ -19,6 +19,14 @@
 module Canvas::AccountReports
   module Default
 
+    def self.location_report_csv(account_report)
+      LocationReports.new(account_report)
+    end
+
+    def self.employee_group_report_csv(account_report)
+      EmployeeGroupReports.new(account_report)
+    end
+
     def self.student_assignment_outcome_map_csv(account_report)
       GradeReports.new(account_report).student_assignment_outcome_map
     end

@@ -21,6 +21,16 @@ require 'canvas/account_reports/default'
 
 Rails.configuration.to_prepare do
   Canvas::AccountReports.add_account_reports 'default', 'Default', {
+    'location_report_csv'=> {
+      :title => 'Location Report',
+      :parameters_partial => 'location_report_csv_parameters',
+      :description_partial => 'location_report_csv_description',
+    },
+    'employee_group_report_csv'=> {
+      :title => 'Employee Group Report',
+      :parameters_partial => 'employee_group_report_csv_parameters',
+      :description_partial => 'employee_group_report_csv_description',
+    },
     'student_assignment_outcome_map_csv'=> {
       :title => 'Student Competency',
       :parameters_partial => 'grade_export_csv_parameters',
