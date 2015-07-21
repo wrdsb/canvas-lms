@@ -1,14 +1,14 @@
 define [
   'Backbone'
   'underscore'
-], (Backbone, _) ->
+  'i18n!publishable'
+], (Backbone, _, I18n) ->
 
   class Publishable extends Backbone.Model
 
     initialize: (attributes, options)->
-      @_url = options['url']
       @_root = options['root']
-      @set 'publishable', true
+      @set 'unpublishable', true
 
     publish: =>
       @set 'published', true
@@ -18,8 +18,8 @@ define [
       @set 'published', false
       @save()
 
-    url: ->
-      @_url
+    disabledMessage: ->
+      I18n.t('cant_unpublish', "Can't unpublish")
 
     toJSON: ->
       json = {}

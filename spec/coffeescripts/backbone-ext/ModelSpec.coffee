@@ -4,7 +4,7 @@ define ['Backbone'], ({Model}) ->
     setup: -> @model = new Model
 
   test '@mixin', ->
-    initSpy = sinon.spy()
+    initSpy = @spy()
     mixable =
       defaults:
         cash: 'money'
@@ -30,7 +30,7 @@ define ['Backbone'], ({Model}) ->
     model.decrement 'count', 7
     equal model.get('count'), 3
 
-  test '#deepGet returns nested attributes', -> 
+  test '#deepGet returns nested attributes', ->
     @model.attributes = {foo: {bar: {zing: 'cats'}}}
 
     value = @model.deepGet 'foo.bar.zing'

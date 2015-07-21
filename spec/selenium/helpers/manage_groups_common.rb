@@ -1,7 +1,10 @@
 require File.expand_path(File.dirname(__FILE__) + '/../common')
 
   def add_category(course, name, opts={})
-    f(".add_category_link").click
+    keep_trying_until do
+      f(".add_category_link").click
+      wait_for_ajaximations
+    end
     form = f("#add_category_form")
     input = form.find_element(:css, "input[type=text]")
     replace_content input, name
@@ -27,15 +30,18 @@ require File.expand_path(File.dirname(__FILE__) + '/../common')
       form.find_element(:css, "#category_no_groups").click
     end
     submit_form(form)
-    keep_trying_until { find_with_jquery("#add_category_form:visible").should be_nil }
-    category = course.group_categories.find_by_name(name)
-    category.should_not be_nil
+    keep_trying_until { expect(find_with_jquery("#add_category_form:visible")).to be_nil }
+    category = course.group_categories.where(name: name).first
+    expect(category).not_to be_nil
     keep_trying_until { fj("#category_#{category.id} .student_links:visible") }
     category
   end
 
   def edit_category(opts={})
-    fj(".edit_category_link:visible").click
+    keep_trying_until do
+      fj(".edit_category_link:visible").click
+      wait_for_ajaximations
+    end
     form = f("#edit_category_form")
     input_box = form.find_element(:css, "input[type=text]")
     if opts[:new_name]
@@ -89,7 +95,7 @@ require File.expand_path(File.dirname(__FILE__) + '/../common')
     wait_for_ajaximations
     submit_form("#edit_group_form")
     wait_for_ajaximations
-    context.groups.find_by_name(name)
+    context.groups.where(name: name).first
   end
 
   def add_groups_in_category (category, i=3)
@@ -106,4 +112,12 @@ require File.expand_path(File.dirname(__FILE__) + '/../common')
           $('#{from_group} .user_id_#{user_id}'),
           $('#{to_group}'))
     SCRIPT
+    sleep 1
+  end
+
+  def expand_group(group_id)
+    group_selector = (group_id == "unassigned" ? ".unassigned-students" : ".group[data-id=\"#{group_id}\"]")
+    return if group_selector == ".unassigned-students" || f(group_selector).attribute(:class) =~ /group-expanded/
+    fj("#{group_selector} .toggle-group").click
+    wait_for_ajax_requests
   end

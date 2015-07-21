@@ -10,6 +10,7 @@ module BroadcastPolicies
     def should_dispatch_assignment_due_date_changed?
       accepting_messages? &&
       assignment.changed_in_state(:published, :fields => :due_at) &&
+      !just_published? &&
       !AssignmentPolicy.due_dates_equal?(assignment.due_at, prior_version.due_at) &&
       created_before(3.hours.ago)
     end
@@ -19,12 +20,29 @@ module BroadcastPolicies
       assignment.published? &&
       !assignment.muted? &&
       created_before(30.minutes.ago) &&
+      !just_published? &&
       (assignment.points_possible != prior_version.points_possible || assignment.assignment_changed)
     end
 
-    private
-    def accepting_messages?
+    def should_dispatch_assignment_created?
+      return false unless context_sendable?
+      published_on_create? || just_published?
+    end
+
+    def should_dispatch_assignment_unmuted?
       assignment.context.available? &&
+        assignment.recently_unmuted
+    end
+
+    private
+
+    def context_sendable?
+      assignment.context.available? &&
+        !assignment.context.concluded?
+    end
+
+    def accepting_messages?
+      context_sendable? &&
       prior_version
     end
 
@@ -34,6 +52,14 @@ module BroadcastPolicies
 
     def created_before(time)
       assignment.created_at < time
+    end
+
+    def published_on_create?
+      assignment.just_created && assignment.published?
+    end
+
+    def just_published?
+      assignment.workflow_state_changed? && assignment.published?
     end
   end
 end

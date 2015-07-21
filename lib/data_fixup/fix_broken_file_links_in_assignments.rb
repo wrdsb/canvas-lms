@@ -1,3 +1,5 @@
+require 'nokogiri'
+
 module DataFixup::FixBrokenFileLinksInAssignments
 
   def self.broken_assignment_scope
@@ -11,10 +13,8 @@ module DataFixup::FixBrokenFileLinksInAssignments
     broken_assignment_scope.find_in_batches do |assignments|
       # When the topic is saved it can't find the assignment because the
       # find_in_batches scope is still in effect, make it have an exclusive scope
-      Assignment.send(:with_exclusive_scope) do
-        assignments.each do |assignment|
-          check_and_fix_assignment_description(assignment)
-        end
+      assignments.each do |assignment|
+        check_and_fix_assignment_description(assignment)
       end
     end
   end
@@ -41,14 +41,14 @@ module DataFixup::FixBrokenFileLinksInAssignments
           end
 
           if file_id
-            if att = Attachment.find_by_id(file_id)
+            if att = Attachment.where(id: file_id).first
               # this find returns the passed in att if nothing found in the context
               # and sometimes URI.unescape errors so ignore that
               att = att.context.attachments.find(att.id) rescue att
               if att.context_type == "Course" && att.context_id == assignment.context_id
                 course_id = assignment.context_id
                 file_id = att.id
-              elsif att.cloned_item_id && cloned_att = assignment.context.attachments.find_by_cloned_item_id(att.cloned_item_id)
+              elsif att.cloned_item_id && cloned_att = assignment.context.attachments.where(cloned_item_id: att.cloned_item_id).first
                 course_id = assignment.context_id
                 file_id = assignment.context.attachments.find(cloned_att.id).id rescue cloned_att.id
               elsif att.context_type == "Course"

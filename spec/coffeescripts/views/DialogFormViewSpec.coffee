@@ -1,10 +1,11 @@
 define [
+  'jquery'
   'Backbone'
   'compiled/views/DialogFormView'
   'helpers/assertions'
   'helpers/util'
   'helpers/jquery.simulate'
-], (Backbone, DialogFormView, assert, util) ->
+], ($, Backbone, DialogFormView, assert, util) ->
 
   # global test vars
   server = null
@@ -23,6 +24,7 @@ define [
 
   module 'DialogFormView',
     setup: ->
+      @closeSpy = @spy DialogFormView::, 'close'
       server = sinon.fakeServer.create()
       model = new Backbone.Model id:1, is_awesome: true
       model.url = '/test'
@@ -99,4 +101,7 @@ define [
     equal view.$el.find('.outlet').html(), 'hello',
       "renders template into outlet"
 
-
+  test 'closing the dialog calls view#close', ->
+    openDialog()
+    util.closeDialog()
+    ok @closeSpy.called

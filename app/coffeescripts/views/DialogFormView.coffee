@@ -4,6 +4,7 @@ define [
   'compiled/fn/preventDefault'
   'jst/DialogFormWrapper'
   'jqueryui/dialog'
+  'compiled/jquery/fixDialogButtons'
 ], ($, ValidatedFormView, preventDefault, wrapper) ->
 
   ##
@@ -44,6 +45,10 @@ define [
 
       height: null
 
+      minWidth: null
+
+      minHeight: null
+
       fixDialogButtons: true
 
     $dialogAppendTarget: $ 'body'
@@ -58,19 +63,24 @@ define [
     initialize: ->
       super
       @setTrigger()
+      @open = @firstOpen
+      @renderEl = @firstRenderEl
 
     ##
+    # the function to open the dialog.  will be set to either @firstOpen or
+    # @openAgain depending on the state of the view
+    #
     # @api public
-    open: ->
-      @firstOpen()
-      @openAgain()
-      @open = @openAgain
+    open: null
 
     ##
     # @api public
     close: ->
-      @dialog.close()
-      @$trigger?.focus()
+      # could be calling this from the close event
+      # so we want to check if it's open
+      if @dialog?.isOpen()
+        @dialog.close()
+      @focusReturnsTo()?.focus()
 
     ##
     # @api public
@@ -85,6 +95,9 @@ define [
     remove: ->
       super
       @$trigger?.off '.dialogFormView'
+      @$dialog?.remove()
+      @open = @firstOpen
+      @renderEl = @firstRenderEl
 
     ##
     # lazy init on first open
@@ -93,6 +106,8 @@ define [
       @insert()
       @render()
       @setupDialog()
+      @openAgain()
+      @open = @openAgain
 
     ##
     # @api private
@@ -124,16 +139,21 @@ define [
       @$trigger?.on 'click.dialogFormView', preventDefault(@toggle)
 
     ##
+    # the function to render the element.  it will either be firstRenderEl or
+    # renderElAgain depending on the state of the view
+    #
     # @api private
-    renderEl: =>
+    renderEl: null
+
+    firstRenderEl: =>
       @$el.html @wrapperTemplate @toJSON()
-      @renderOutlet()
-      # reassign: only render the outlout now
-      @renderEl = @renderOutlet
+      @renderElAgain()
+      # reassign: only render the outlet now
+      @renderEl = @renderElAgain
 
     ##
     # @api private
-    renderOutlet: =>
+    renderElAgain: =>
       html = @template @toJSON()
       @$el.find('.outlet').html html
 
@@ -154,10 +174,14 @@ define [
       opts =
         autoOpen: false
         title: @getDialogTitle()
-        close: => @trigger 'close'
+        close: =>
+          @close()
+          @trigger 'close'
         open: => @trigger 'open'
       opts.width = @options.width
       opts.height = @options.height
+      opts.minWidth = @options.minWidth
+      opts.minHeight = @options.minHeight
       @$el.dialog(opts)
       @$el.fixDialogButtons() if @options.fixDialogButtons
       @dialog = @$el.data 'dialog'
@@ -176,3 +200,11 @@ define [
       super
       @close()
 
+    ##
+    # @api private
+    focusReturnsTo: ->
+      return null unless @$trigger
+      if id = @$trigger.data('focusReturnsTo')
+        return $("##{id}")
+      else
+        return @$trigger

@@ -28,14 +28,14 @@ describe 'appointment_canceled_by_user.sms' do
                      :data => {:updating_user => user,
                                        :cancel_reason => "just because"})
 
-    @message.body.should include('some title')
-    @message.body.should include(user.name)
+    expect(@message.body).to include('some title')
+    expect(@message.body).to include(user.name)
   end
 
   it "should render for groups" do
     user = user_model
     @course = course_model
-    cat = @course.group_categories.create
+    cat = group_category
     @group = cat.groups.create(:context => @course)
     @group.users << user
     appointment_participant_model(:participant => @group, :course => @course)
@@ -45,7 +45,7 @@ describe 'appointment_canceled_by_user.sms' do
                      :data => {:updating_user => user,
                                        :cancel_reason => "just because"})
 
-    @message.body.should include('some title')
-    @message.body.should include(user.name)
+    expect(@message.body).to include('some title')
+    expect(@message.body).to include(user.name)
   end
 end

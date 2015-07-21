@@ -17,14 +17,15 @@
 #
 
 require [
+  'i18n!user_profile',
   'Backbone'
   'jquery'
   'str/htmlEscape'
   'compiled/util/AvatarWidget'
   'compiled/tinymce'
-  'compiled/jquery/validate'
+  'jquery.instructure_forms'
   'tinymce.editor_box'
-], ({View}, $, htmlEscape, AvatarWidget) ->
+], (I18n, {View}, $, htmlEscape, AvatarWidget) ->
 
   class ProfileShow extends View
 
@@ -33,12 +34,22 @@ require [
     events:
       'click [data-event]': 'handleDeclarativeClick'
       'submit #edit_profile_form': 'validateForm'
+      'click .report_avatar_link': 'reportAvatarLink'
 
     attemptedDependencyLoads: 0
 
     initialize: ->
       super
       new AvatarWidget('.profile-link')
+
+    reportAvatarLink: (e) ->
+      e.preventDefault()
+      return if !confirm(I18n.t("Are you sure you want to report this profile picture?"))
+      link = $(e.currentTarget)
+      $('.avatar').hide()
+      $.ajaxJSON(link.attr('href'), "POST", {}, (data) =>
+        $.flashMessage I18n.t("The profile picture has been reported")
+      )
 
     handleDeclarativeClick: (event) ->
       event.preventDefault()
@@ -79,10 +90,10 @@ require [
       @$linkFields ?= @$ '#profile_link_fields'
       $row = $ """
         <tr>
-          <td><input type="text" maxlength="255" name="link_titles[]" value="#{htmlEscape title}"></td>
+          <td><input aria-label="#{htmlEscape I18n.t("Link title")}" type="text" maxlength="255" name="link_titles[]" value="#{htmlEscape title}"></td>
           <td>→</td>
-          <td><input type="text" name="link_urls[]" value="#{htmlEscape url}"></td>
-          <td><a href="#" data-event="removeLinkRow"><i class="icon-end"></i></a></td>
+          <td><input aria-label="#{htmlEscape I18n.t("Link Url")}" type="text" name="link_urls[]" value="#{htmlEscape url}"></td>
+          <td><a href="#" data-event="removeLinkRow"><span class="screenreader-only">#{htmlEscape I18n.t("Remove")}</span><i class="icon-end"></i></a></td>
         </tr>
       """
       @$linkFields.append $row
@@ -96,7 +107,12 @@ require [
       $el.parents('tr').remove()
 
     validateForm: (event) ->
-      unless $('#edit_profile_form').validate()
+      validations =
+        property_validations:
+          'user_profile[title]': (value) ->
+            if value && value.length > 255
+              return I18n.t("profile_title_too_long", "Title is too long")
+      if !$(event.target).validateForm(validations)
         event.preventDefault()
 
   new ProfileShow ENV.PROFILE

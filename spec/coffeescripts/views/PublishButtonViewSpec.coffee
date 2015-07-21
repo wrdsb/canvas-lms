@@ -4,7 +4,7 @@ define [
   'jquery'
   'helpers/jquery.simulate'
 ], (Backbone, PublishButtonView, $) ->
-###
+
   module 'PublishButtonView',
     setup: ->
       @publishable = class Publishable extends Backbone.Model
@@ -14,32 +14,41 @@ define [
 
         publish: ->
           @set("published", true)
-          $.Deferred().resolve()
+          dfrd = $.Deferred()
+          dfrd.resolve()
+          dfrd
 
         unpublish: ->
           @set("published", false)
-          $.Deferred().resolve()
+          dfrd = $.Deferred()
+          dfrd.resolve()
+          dfrd
 
-      @publish   = new Publishable(published: false, publishable: true)
-      @published = new Publishable(published: true,  publishable: true)
-      @disabled  = new Publishable(published: true,  publishable: false)
+        disabledMessage: ->
+          "can't unpublish"
+
+      @publish   = new Publishable(published: false, unpublishable: true)
+      @published = new Publishable(published: true,  unpublishable: true)
+      @disabled  = new Publishable(published: true,  unpublishable: false)
 
   # initialize
   test 'initialize publish', ->
     btnView = new PublishButtonView(model: @publish).render()
     ok btnView.isPublish()
-    equal btnView.$el.html().match(/<i class="icon-unpublished"><\/i>&nbsp;Publish/).length, 1
+    equal btnView.$text.html().match(/Publish/).length, 1
+    ok !btnView.$text.html().match(/Published/)
 
   test 'initialize published', ->
     btnView = new PublishButtonView(model: @published).render()
     ok btnView.isPublished()
-    equal btnView.$el.html().match(/<i class="icon-publish"><\/i>&nbsp;Published/).length, 1
+    equal btnView.$text.html().match(/Published/).length, 1
 
   test 'initialize disabled published', ->
     btnView = new PublishButtonView(model: @disabled).render()
     ok btnView.isPublished()
     ok btnView.isDisabled()
-    equal btnView.$el.html().match(/<i class="icon-publish"><\/i>&nbsp;Published/).length, 1
+    equal btnView.$text.html().match(/Published/).length, 1
+    equal btnView.$el.attr('aria-label').match(/can't unpublish/).length, 1
 
   # state
   test 'disable should add disabled state', ->
@@ -71,7 +80,8 @@ define [
   test 'mouseenter publish button should not change text or icon', ->
     btnView = new PublishButtonView(model: @publish).render()
     btnView.$el.trigger('mouseenter')
-    equal btnView.$el.html().match(/<i class="icon-unpublished"><\/i>&nbsp;Publish/).length, 1
+    equal btnView.$text.html().match(/Publish/).length, 1
+    ok !btnView.$text.html().match(/Published/)
 
   test 'mouseenter published button should remove published state', ->
     btnView = new PublishButtonView(model: @published).render()
@@ -86,7 +96,7 @@ define [
   test 'mouseenter published button should change icon and text', ->
     btnView = new PublishButtonView(model: @published).render()
     btnView.$el.trigger('mouseenter')
-    equal btnView.$el.html().match(/<i class="icon-unpublish"><\/i>&nbsp;Unpublish/).length, 1
+    equal btnView.$text.html().match(/Unpublish/).length, 1
 
   test 'mouseenter disabled published button should keep published state', ->
     btnView = new PublishButtonView(model: @disabled).render()
@@ -95,7 +105,7 @@ define [
 
   test 'mouseenter disabled published button should not change text or icon', ->
     btnView = new PublishButtonView(model: @disabled).render()
-    equal btnView.$el.html().match(/<i class="icon-publish"><\/i>&nbsp;Published/).length, 1
+    equal btnView.$text.html().match(/Published/).length, 1
 
 
   # mouseleave
@@ -115,7 +125,7 @@ define [
     btnView = new PublishButtonView(model: @published).render()
     btnView.$el.trigger('mouseenter')
     btnView.$el.trigger('mouseleave')
-    equal btnView.$el.html().match(/<i class="icon-publish"><\/i>&nbsp;Published/).length, 1
+    equal btnView.$text.html().match(/Published/).length, 1
 
 
   # click
@@ -179,7 +189,16 @@ define [
     # setup rejection
     @publishable.prototype.unpublish = ->
       @set("published", true)
-      $.Deferred().reject()
+      response =
+        responseText: JSON.stringify(
+          errors:
+            published: [
+              message: "Can't unpublish if there are already student submissions"
+            ]
+        )
+      dfrd = $.Deferred()
+      dfrd.reject(response)
+      dfrd
 
     btnView = new PublishButtonView(model: @published).render()
     ok btnView.isPublished()
@@ -198,4 +217,3 @@ define [
     btnView.$el.trigger('click')
 
     ok !btnView.isPublish()
-###

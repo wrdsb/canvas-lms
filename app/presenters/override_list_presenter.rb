@@ -25,8 +25,8 @@ class OverrideListPresenter
 
   def due_for(due_date)
     return due_date[:title] if due_date[:title]
-    multiple_due_dates? ? 
-      I18n.t('overrides.everyone_else','Everyone else') : 
+    multiple_due_dates? ?
+      I18n.t('overrides.everyone_else','Everyone else') :
       I18n.t('overrides.everyone','Everyone')
   end
 
@@ -54,19 +54,8 @@ class OverrideListPresenter
   def visible_due_dates
     return [] unless assignment
 
-    due_dates  = assignment.all_dates_visible_to(user)
-    section_overrides = due_dates.select { |d| d[:set_type] == 'CourseSection' }
-
-    if section_overrides.count > 0 && section_overrides.count == assignment.context.active_course_sections.count
-      due_dates.delete_if { |d| d[:base] }
-    end
-
-    due_dates = due_dates.sort_by do |date|
-      due_at = date[:due_at]
-      [ due_at.present? ?  0: 1, due_at.presence || 0 ]
-    end
-
-    due_dates.each do |due_date|
+    assignment.dates_hash_visible_to(user).each do |due_date|
+      due_date[:raw] = due_date.dup
       due_date[:lock_at] = lock_at due_date
       due_date[:unlock_at] = unlock_at due_date
       due_date[:due_at] = due_at due_date

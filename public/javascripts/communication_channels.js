@@ -42,7 +42,7 @@ $(document).ready(function() {
     var view = "email";
     $("#communication_channels").show().dialog({
       title:  I18n.t('titles.register_communication', "Register Communication") ,
-      width: 430,
+      width: 600,
       resizable: false,
       modal: true,
       open: function() {
@@ -68,9 +68,16 @@ $(document).ready(function() {
   });
 
   $("#register_sms_number,#register_email_address").formSubmit({
+    object_name: 'communication_channel',
+    required: ['address'],
+    property_validations: {
+      address: function (value) {
+        var match = value.match(/^[a-zA-Z0-9.!#$%&'*+\/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/);
+        return !match && !(match && match.length !== value.length) && !(value.length === 0) && I18n.t("Email is invalid!");
+      }
+    },
     beforeSubmit: function(data) {
       var $list = $(".email_channels");
-      var data = $(this).getFormData({object_name: 'communication_channel'});
       if($(this).attr('id') == "register_sms_number") {
         $list = $(".other_channels");
       }
@@ -96,7 +103,7 @@ $(document).ready(function() {
     }, success: function(channel, $channel) {
       $("#communication_channels").dialog('close');
       $channel.loadingImage('remove');
-      
+
       channel.channel_id = channel.id;
       var select_type = "email_select";
       if($(this).attr('id') == 'register_sms_number') {
@@ -128,7 +135,7 @@ $(document).ready(function() {
   });
   $("a.email_address_taken_learn_more").live('click', function(event) {
     event.preventDefault();
-    
+
   });
   $(".channel_list .channel .delete_channel_link").click(function(event) {
     event.preventDefault();
@@ -180,7 +187,7 @@ $(document).ready(function() {
         title: confirm_title,
         width: 350,
         open: function() {
-          $(this).find(":text:first").focus().select();
+          $(this).closest('.ui-dialog').focus()
         }
       });
     }

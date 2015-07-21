@@ -38,19 +38,17 @@ class CalendarEventsController < ApplicationController
       log_asset_access(@event, "calendar", "calendar")
       respond_to do |format|
         format.html
-        format.json { render :json => @event.to_json(:permissions => {:user => @current_user, :session => session}) }
+        format.json { render :json => @event.as_json(:permissions => {:user => @current_user, :session => session}) }
       end
     end
   end
 
 
   def new
-    @event = @context.calendar_events.build
+    @event = @context.calendar_events.scoped.new
     add_crumb(t('crumbs.new', "New Calendar Event"), named_context_url(@context, :new_context_calendar_event_url))
-    @event.start_at = params[:start_at]
-    @event.end_at = params[:end_at]
-    @event.title = params[:title]
-    @editing = true
+    @event.assign_attributes(params.slice(:title, :start_at, :end_at, :location_name, :location_address))
+    js_env(:DIFFERENTIATED_ASSIGNMENTS_ENABLED => @context.feature_enabled?(:differentiated_assignments))
     authorized_action(@event, @current_user, :create)
   end
 
@@ -63,10 +61,10 @@ class CalendarEventsController < ApplicationController
         if @event.save
           flash[:notice] = t 'notices.created', "Event was successfully created."
           format.html { redirect_to calendar_url_for(@context) }
-          format.json { render :json => @event.to_json(:permissions => {:user => @current_user, :session => session}), :status => :created}
+          format.json { render :json => @event.as_json(:permissions => {:user => @current_user, :session => session}), :status => :created}
         else
-          format.html { render :action => "new" }
-          format.json { render :json => @event.errors.to_json, :status => :bad_request }
+          format.html { render :new }
+          format.json { render :json => @event.errors, :status => :bad_request }
         end
       end
     end
@@ -75,13 +73,11 @@ class CalendarEventsController < ApplicationController
   def edit
     @event = @context.calendar_events.find(params[:id])
     if @event.grants_right?(@current_user, session, :update)
-      @event.start_at = params[:start_at] if params[:start_at]
-      @event.end_at = params[:end_at] if params[:end_at]
-      @event.title = params[:title] if params[:title]
+      @event.update_attributes!(params.slice(:title, :start_at, :end_at, :location_name, :location_address))
     end
-    @editing = true
+    js_env(:DIFFERENTIATED_ASSIGNMENTS_ENABLED => @context.feature_enabled?(:differentiated_assignments))
     if authorized_action(@event, @current_user, :update_content)
-      render :action => 'new'
+      render :new
     end
   end
 
@@ -95,10 +91,10 @@ class CalendarEventsController < ApplicationController
           log_asset_access(@event, "calendar", "calendar", 'participate')
           flash[:notice] = t 'notices.updated', "Event was successfully updated."
           format.html { redirect_to calendar_url_for(@context) }
-          format.json { render :json => @event.to_json(:permissions => {:user => @current_user, :session => session}), :status => :ok }
+          format.json { render :json => @event.as_json(:permissions => {:user => @current_user, :session => session}), :status => :ok }
         else
-          format.html { render :action => "edit" }
-          format.json { render :json => @event.errors.to_json, :status => :bad_request }
+          format.html { render :edit }
+          format.json { render :json => @event.errors, :status => :bad_request }
         end
       end
     end
@@ -111,7 +107,7 @@ class CalendarEventsController < ApplicationController
       @event.destroy
       respond_to do |format|
         format.html { redirect_to calendar_url_for(@context) }
-        format.json { render :json => @event.to_json, :status => :ok }
+        format.json { render :json => @event, :status => :ok }
       end
     end
   end

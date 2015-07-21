@@ -62,9 +62,11 @@ $(document).ready(function() {
       $("#login_information .login .delete_pseudonym_link").show();
 			$.flashMessage(I18n.t('save_succeeded', 'Save successful'));
     },
-    error: function(errors) {
+    error: function(errors, jqXHR, response) {
+      if (response.status === 401) return $.flashError(I18n.t('error.unauthorized', "You do not have sufficient privileges to make the change requested"));
       var accountId = $(this).find(".account_id select").val();
-      errors = Pseudonym.prototype.normalizeErrors(errors, ENV.PASSWORD_POLICIES[accountId] || ENV.PASSWORD_POLICY);
+      var policy = ENV.PASSWORD_POLICIES && ENV.PASSWORD_POLICIES[accountId] || ENV.PASSWORD_POLICY;
+      errors = Pseudonym.prototype.normalizeErrors(errors, policy);
       $(this).formErrors(errors);
     }
   });
@@ -88,11 +90,20 @@ $(document).ready(function() {
     $form.fillFormData(data, {object_name: 'pseudonym'});
     if( data.can_edit_sis_user_id == 'true' ){
       $sis_row.show();
+    } else {
+      $sis_row.remove();
     }
     var passwordable = $(this).parents(".links").hasClass('passwordable');
+    var delegated = passwordable && $(this).parents(".links").hasClass('delegated-auth');
     $form.toggleClass('passwordable', passwordable);
     $form.find("tr.password").showIf(passwordable);
+    $form.find("tr.delegated").showIf(delegated);
     $form.find(".account_id").hide();
+    var $account_select = $form.find(".account_id select");
+    var accountId = $(this).data("accountId");
+    if( $account_select && accountId ){
+      $account_select.val(accountId);
+    }
     $form.dialog({
       width: 'auto',
       close: function() {
@@ -100,7 +111,7 @@ $(document).ready(function() {
           $form.data('unique_id_text').parents(".login").remove();
         }
       }
-    }).fixDialogButtons();
+    });
     $form.dialog('option', 'title', I18n.t('titles.update_login', 'Update Login'))
       .find(".submit_button").text(I18n.t('buttons.update_login', "Update Login"));
     $form.dialog('option', 'beforeClose', function(){

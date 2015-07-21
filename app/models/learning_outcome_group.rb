@@ -23,11 +23,15 @@ class LearningOutcomeGroup < ActiveRecord::Base
   has_many :child_outcome_groups, :class_name => 'LearningOutcomeGroup', :foreign_key => "learning_outcome_group_id"
   has_many :child_outcome_links, :class_name => 'ContentTag', :as => :associated_asset, :conditions => {:tag_type => 'learning_outcome_association', :content_type => 'LearningOutcome'}
   belongs_to :context, :polymorphic => true
+  validates_inclusion_of :context_type, :allow_nil => true, :in => ['Account', 'Course']
+
+  EXPORTABLE_ATTRIBUTES = [:id, :context_id, :context_type, :title, :learning_outcome_group_id, :root_learning_outcome_group_id, :workflow_state, :description, :created_at, :updated_at, :vendor_guid, :low_grade, :high_grade]
+  EXPORTABLE_ASSOCIATIONS = [:learning_outcome_group, :child_outcome_groups, :child_outcome_links]
   before_save :infer_defaults
   validates_length_of :description, :maximum => maximum_text_length, :allow_nil => true, :allow_blank => true
   validates_length_of :title, :maximum => maximum_string_length, :allow_nil => true, :allow_blank => true
-  validates_presence_of :title
-  sanitize_field :description, Instructure::SanitizeField::SANITIZE
+  validates_presence_of :title, :workflow_state
+  sanitize_field :description, CanvasSanitize::SANITIZE
 
   attr_accessor :building_default
 
@@ -86,14 +90,16 @@ class LearningOutcomeGroup < ActiveRecord::Base
 
     # update outcome groups
     unless outcome_group_ids.empty?
-      sql = "UPDATE learning_outcome_groups SET learning_outcome_group_id=#{self.id} WHERE id IN (#{outcome_group_ids.join(",")}) AND context_type='#{self.context_type}' AND context_id='#{self.context_id}'"
-      ContentTag.connection.execute(sql)
+      LearningOutcomeGroup.
+          where(id: outcome_group_ids, context_type: context_type, context_id: context_id).
+          update_all(learning_outcome_group_id: self)
     end
 
     # update outcome links
     unless outcome_link_ids.empty?
-      sql = "UPDATE content_tags SET associated_asset_id=#{self.id} WHERE id IN (#{outcome_link_ids.join(",")}) AND context_type='#{self.context_type}' AND context_id='#{self.context_id}'"
-      ContentTag.connection.execute(sql)
+      ContentTag.
+          where(id: outcome_link_ids, context_type: context_type, context_id: context_id).
+          update_all(associated_asset_id: self)
     end
 
     orders
@@ -115,7 +121,7 @@ class LearningOutcomeGroup < ActiveRecord::Base
         
         new_ids = []
         ids_to_check.each do |id|
-          group = LearningOutcomeGroup.for_context(self.context).active.find_by_id(id)
+          group = LearningOutcomeGroup.for_context(self.context).active.where(id: id).first
           new_ids += group.parent_ids if group
         end
         
@@ -130,17 +136,12 @@ class LearningOutcomeGroup < ActiveRecord::Base
     ancestor_ids.member?(id)
   end
 
-  # use_outcome should be a lambda that takes an outcome and returns a boolean
-  def clone_for(context, parent, opts={})
-    parent.add_outcome_group(self, opts)
-  end
-
   # adds a new link to an outcome to this group. does nothing if a link already
   # exists (an outcome can be linked into a context multiple times by multiple
   # groups, but only once per group).
   def add_outcome(outcome)
     # no-op if the outcome is already linked under this group
-    outcome_link = child_outcome_links.active.find_by_content_id(outcome.id)
+    outcome_link = child_outcome_links.active.where(content_id: outcome).first
     return outcome_link if outcome_link
 
     # create new link and in this group
@@ -166,12 +167,12 @@ class LearningOutcomeGroup < ActiveRecord::Base
     copy.save!
 
     # copy the group contents
-    original.child_outcome_groups.each do |group|
+    original.child_outcome_groups.active.each do |group|
       next if opts[:only] && opts[:only][group.asset_string] != "1"
       copy.add_outcome_group(group, opts)
     end
 
-    original.child_outcome_links.each do |link|
+    original.child_outcome_links.active.each do |link|
       next if opts[:only] && opts[:only][link.asset_string] != "1"
       copy.add_outcome(link.content)
     end
@@ -209,73 +210,31 @@ class LearningOutcomeGroup < ActiveRecord::Base
     group
   end
 
+  attr_accessor :skip_tag_touch
   alias_method :destroy!, :destroy
   def destroy
     transaction do
       # delete the children of the group, both links and subgroups, then delete
       # the group itself
-      self.child_outcome_links.active.includes(:content).each{ |outcome_link| outcome_link.destroy }
-      self.child_outcome_groups.active.each{ |outcome_group| outcome_group.destroy }
+      self.child_outcome_links.active.includes(:content).each do |outcome_link|
+        outcome_link.skip_touch = true if @skip_tag_touch
+        outcome_link.destroy
+      end
+      self.child_outcome_groups.active.each do |outcome_group|
+        outcome_group.skip_tag_touch = true if @skip_tag_touch
+        outcome_group.destroy
+      end
+
       self.workflow_state = 'deleted'
       save!
     end
   end
   
-  def self.import_from_migration(hash, migration, item=nil)
-    hash = hash.with_indifferent_access
-    if hash[:is_global_standard]
-      if Account.site_admin.grants_right?(migration.user, :manage_global_outcomes)
-        hash[:parent_group] ||= LearningOutcomeGroup.global_root_outcome_group
-        item ||= LearningOutcomeGroup.global.find_by_migration_id(hash[:migration_id]) if hash[:migration_id]
-        item ||= LearningOutcomeGroup.global.find_by_vendor_guid(hash[:vendor_guid]) if hash[:vendor_guid]
-        item ||= LearningOutcomeGroup.new
-      else
-        migration.add_warning(t(:no_global_permission, %{You're not allowed to manage global outcomes, can't add "%{title}"}, :title => hash[:title]))
-        return
-      end
-    else
-      context = migration.context
-      root_outcome_group = context.root_outcome_group
-      item ||= find_by_context_id_and_context_type_and_migration_id(context.id, context.class.to_s, hash[:migration_id]) if hash[:migration_id]
-      item ||= context.learning_outcome_groups.new
-      item.context = context
-    end
-    item.migration_id = hash[:migration_id]
-    item.title = hash[:title]
-    item.description = hash[:description]
-    item.vendor_guid = hash[:vendor_guid]
-    item.low_grade = hash[:low_grade]
-    item.high_grade = hash[:high_grade]
-    
-    item.save!
-    if hash[:parent_group]
-      hash[:parent_group].adopt_outcome_group(item)
-    else
-      root_outcome_group.adopt_outcome_group(item)
-    end
-    
-    context.imported_migration_items << item if context && context.imported_migration_items && item.new_record?
+  scope :active, -> { where("learning_outcome_groups.workflow_state<>'deleted'") }
 
-    if hash[:outcomes]
-      hash[:outcomes].each do |child|
-        if child[:type] == 'learning_outcome_group'
-          child[:parent_group] = item
-          LearningOutcomeGroup.import_from_migration(child, migration)
-        else
-          child[:learning_outcome_group] = item
-          LearningOutcome.import_from_migration(child, migration)
-        end
-      end
-    end
-    
-    item
-  end
-  
-  scope :active, where("learning_outcome_groups.workflow_state<>'deleted'")
+  scope :global, -> { where(:context_id => nil) }
 
-  scope :global, where(:context_id => nil)
-
-  scope :root, where(:learning_outcome_group_id => nil)
+  scope :root, -> { where(:learning_outcome_group_id => nil) }
 
   def self.for_context(context)
     context ? context.learning_outcome_groups : LearningOutcomeGroup.global
@@ -307,7 +266,7 @@ class LearningOutcomeGroup < ActiveRecord::Base
 
   def self.order_by_title
     scope = self
-    scope = scope.select("learning_outcome_groups.*") if !scoped?(:find, :select)
+    scope = scope.select("learning_outcome_groups.*") if !scoped.select_values.present?
     scope.select(title_order_by_clause).order(title_order_by_clause)
   end
 end

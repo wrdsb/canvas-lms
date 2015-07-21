@@ -19,43 +19,39 @@
 class AppCenterController < ApplicationController
   before_filter :require_context
 
-  def generate_app_api_collection(base_url)
-    PaginatedCollection.build do |pager|
-      page = (params['page'] || 1).to_i
-      response = yield AppCenter::AppApi.new, page
-      response ||= {}
-      pager.replace(response['objects'] || [])
-      pager.next_page = response['meta']['next_page'] if response['meta']
-      pager
+  def map_tools_to_apps!(context, apps)
+    return unless apps
+    ContextExternalTool.all_tools_for(context).each do |tool|
+      app = nil
+      app_center_id = tool.app_center_id || tool.tool_id
+      app = apps.find{|a| app_center_id == a['short_name'] } if app_center_id
+      app['is_installed'] = true if app
     end
   end
 
+  def app_api
+    @app_api ||= AppCenter::AppApi.new
+  end
+
+  def page
+    (params['page'] || 1).to_i
+  end
+
   def index
-    per_page = params['per_page'] || 72
+    per_page = Api.per_page_for(self, default: 72, max: 72)
     endpoint_scope = (@context.is_a?(Account) ? 'account' : 'course')
     base_url = send("api_v1_#{endpoint_scope}_app_center_apps_url")
-    collection = generate_app_api_collection(base_url) {|app_api, page| app_api.get_apps(page, per_page)}
-    render :json => Api.paginate(collection, self, base_url, :per_page => per_page.to_i)
-  end
-
-  def reviews
-    per_page = params['per_page'] || 15
-    endpoint_scope = (@context.is_a?(Account) ? 'account' : 'course')
-    base_url = send("api_v1_#{endpoint_scope}_app_center_app_reviews_url")
-    force_refresh = params['force_refresh'] == '1'
-    collection = generate_app_api_collection(base_url) {|app_api, page| app_api.get_app_reviews(params[:app_id], page, per_page, force_refresh)}
-    render :json => Api.paginate(collection, self, base_url, :per_page => per_page.to_i)
-  end
-
-  def review
-    app_api = AppCenter::AppApi.new
-    review = app_api.get_app_user_review(params[:app_id], @current_user.try(:uuid))
-    render :json => review
-  end
-
-  def add_review
-    app_api = AppCenter::AppApi.new
-    review = app_api.add_app_review(params[:app_id], @current_user.try(:uuid), @current_user.try(:name), params[:rating], params[:comments], @current_user.try(:avatar_url))
-    render :json => review
+    response = app_api.get_apps(page, per_page) || {}
+    if response['lti_apps']
+      collection = PaginatedCollection.build do |pager|
+        map_tools_to_apps!(@context, response['lti_apps'])
+        pager.replace(response['lti_apps'])
+        pager.next_page = response['meta']['next_page'] if response['meta']
+        pager
+      end
+      render :json => Api.paginate(collection, self, base_url, :per_page => per_page.to_i)
+    else
+      render :json => response
+    end
   end
 end

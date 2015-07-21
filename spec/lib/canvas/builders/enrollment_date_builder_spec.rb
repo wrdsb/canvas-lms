@@ -33,7 +33,7 @@ describe Canvas::Builders::EnrollmentDateBuilder do
     end
 
     def test_builder(enrollment, res)
-      Canvas::Builders::EnrollmentDateBuilder.build(enrollment).map{|d|d.map(&:to_i)}.should == res.map{|d|d.map(&:to_i)}
+      expect(Canvas::Builders::EnrollmentDateBuilder.build(enrollment).map{|d|d.map(&:to_i)}).to eq res.map{|d|d.map(&:to_i)}
     end
 
     context "has enrollment dates from enrollment" do
@@ -70,7 +70,7 @@ describe Canvas::Builders::EnrollmentDateBuilder do
       end
 
       it "for teacher" do
-        test_builder @teacher_enrollment, [[@section.start_at, @section.end_at], [@term.start_at, @term.end_at]]
+        test_builder @teacher_enrollment, [[@section.start_at, @section.end_at], [nil, @term.end_at]]
       end
 
       it "for teacher with no term dates" do
@@ -100,7 +100,7 @@ describe Canvas::Builders::EnrollmentDateBuilder do
       end
 
       it "for teacher" do
-        test_builder @teacher_enrollment, [[@course.start_at, @course.end_at], [@term.start_at, @term.end_at]]
+        test_builder @teacher_enrollment, [[@course.start_at, @course.end_at], [nil, @term.end_at]]
       end
 
       it "for teacher with no term dates" do
@@ -125,7 +125,7 @@ describe Canvas::Builders::EnrollmentDateBuilder do
       end
 
       it "for teacher" do
-        test_builder @teacher_enrollment, [[@term.start_at, @term.end_at]]
+        test_builder @teacher_enrollment, [[nil, @term.end_at]]
       end
 
       it "for student" do
@@ -133,5 +133,48 @@ describe Canvas::Builders::EnrollmentDateBuilder do
       end
     end
 
+  end
+
+  describe ".preload" do
+    it "should work" do
+      course_with_teacher(:active_all => true)
+      @enrollment.reload
+      loaded_course = @enrollment.association(:course).loaded?
+      expect(loaded_course).to be_falsey
+      Canvas::Builders::EnrollmentDateBuilder.preload([@enrollment])
+      loaded_course = @enrollment.association(:course).loaded?
+      loaded_course_section = @enrollment.association(:course_section).loaded?
+      loaded_enrollment_term = @enrollment.course.association(:enrollment_term).loaded?
+      expect(loaded_course).to be_truthy
+      expect(loaded_course_section).to be_truthy
+      expect(loaded_enrollment_term).to be_truthy
+
+      # should already be cached on the object
+      Rails.cache.expects(:fetch).never
+      @enrollment.enrollment_dates
+    end
+
+    it "should not have to load stuff if already in cache" do
+      enable_cache do
+        course_with_teacher(:active_all => true)
+        # prime the cache
+        Canvas::Builders::EnrollmentDateBuilder.preload([@enrollment])
+
+        # now reload
+        @enrollment = Enrollment.find(@enrollment.id)
+        Canvas::Builders::EnrollmentDateBuilder.preload([@enrollment])
+        loaded_course = @enrollment.association(:course).loaded?
+        loaded_course_section = @enrollment.association(:course_section).loaded?
+        loaded_enrollment_term = @enrollment.course.association(:enrollment_term).loaded?
+        expect(loaded_course).to be_truthy
+        # it shouldn't have had to load these associations
+        expect(loaded_course_section).to be_falsey
+        expect(loaded_enrollment_term).to be_falsey
+        # should already be cached on the object
+
+        Rails.cache.expects(:fetch).never
+        @enrollment.enrollment_dates
+      end
+    end
   end
 end

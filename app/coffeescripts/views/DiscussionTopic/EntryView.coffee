@@ -1,4 +1,5 @@
 define [
+  'jquery'
   'underscore'
   'i18n!discussions'
   'compiled/discussions/MarkAsReadWatcher'
@@ -13,10 +14,10 @@ define [
   'compiled/discussions/EntryEditor'
   'str/htmlEscape'
   'vendor/jquery.ba-tinypubsub'
-  'compiled/str/convertApiUserContent'
+  'compiled/str/apiUserContent'
   'jst/_avatar'
   'jst/discussions/_reply_form'
-], (_, I18n, MarkAsReadWatcher, walk, Backbone, EntryCollection, entryContentPartial, deletedEntriesTemplate, entryWithRepliesTemplate, entryStats, Reply, EntryEditor, htmlEscape, {publish}, convertApiUserContent) ->
+], ($, _, I18n, MarkAsReadWatcher, walk, Backbone, EntryCollection, entryContentPartial, deletedEntriesTemplate, entryWithRepliesTemplate, entryStatsTemplate, Reply, EntryEditor, htmlEscape, {publish}, apiUserContent) ->
 
   class EntryView extends Backbone.View
 
@@ -39,10 +40,13 @@ define [
       '.replies:first': '$replies'
       '.headerBadges:first': '$headerBadges'
       '.discussion-read-state-btn:first': '$readStateToggle'
+      '.discussion-rate-action': '$rateLink'
+      '.discussion-rating': '$ratingSum'
 
     events:
       'click .loadDescendants': 'loadDescendants'
       'click [data-event]': 'handleDeclarativeEvent'
+      'keydown': 'handleKeyDown'
 
     defaults:
       treeView: null
@@ -62,8 +66,16 @@ define [
       @$el.attr 'id', "entry-#{@model.get 'id'}"
       @model.on 'change:deleted', @toggleDeleted
       @model.on 'change:read_state', @toggleReadState
-      @model.on 'change:editor', @render
-      @model.on 'change:editor', (entry) -> entry.trigger('edited')
+      @model.on 'change:editor', (entry) =>
+        @render()
+        entry.trigger('edited')
+      @model.on 'change:replies', (model, value) =>
+        if _.isEmpty(value)
+          delete @treeView
+        else
+          @renderTree()
+      @model.on 'change:rating', @renderRating
+      @model.on 'change:rating_sum', @renderRatingSum
 
     toggleRead: (e) ->
       e.preventDefault()
@@ -93,7 +105,7 @@ define [
 
     toJSON: ->
       json = @model.attributes
-      json.edited_at = $.parseFromISO(json.updated_at).datetime_formatted
+      json.edited_at = $.datetimeString(json.updated_at)
       if json.editor
         json.editor_name = json.editor.display_name
         json.editor_href = "href=\"#{json.editor.html_url}\""
@@ -111,6 +123,11 @@ define [
       @addCountsToHeader() unless @addedCountsToHeader
       @$el.toggleClass 'collapsed'
 
+      if @$el.hasClass('collapsed')
+        $el.attr('title', I18n.t('Expand Subdiscussion'))
+      else
+        $el.attr('title', I18n.t('Collapse Subdiscussion'))
+
     expand: ->
       @$el.removeClass 'collapsed'
 
@@ -122,11 +139,11 @@ define [
       stats = @countPosterity()
       html = """
         <div class='new-and-total-badge'>
-          <span class="new-items">#{stats.unread}</span>
-          <span class="total-items">#{stats.total}</span>
+          <span class="new-items">#{htmlEscape stats.unread}</span>
+          <span class="total-items">#{htmlEscape stats.total}</span>
         </div>
         """
-      @$headerBadges.append entryStats({stats})
+      @$headerBadges.append entryStatsTemplate({stats})
       @addedCountsToHeader = true
 
     toggleDeleted: (model, deleted) =>
@@ -148,6 +165,8 @@ define [
       super
       @collapse() if @options.collapsed
       @setToggleTooltip()
+      @renderRating()
+      @renderRatingSum()
       if @model.get('read_state') is 'unread' and !@model.get('forced_read_state') and !ENV.DISCUSSION.MANUAL_MARK_AS_READ
         @readMarker ?= new MarkAsReadWatcher this
         # this is throttled so calling it here is okay
@@ -158,10 +177,12 @@ define [
 
     renderTree: (opts = {}) =>
       return if @treeView?
+
       replies = @model.get 'replies'
       descendants = (opts.descendants or @options.descendants) - 1
       children = opts.children or @options.children
       collection = new EntryCollection replies, perPage: children
+
       page = collection.getPageAsCollection 0
       @treeView = new @options.treeView
         el: @$replies[0]
@@ -171,12 +192,15 @@ define [
         showMoreDescendants: @options.showMoreDescendants
       @treeView.render()
 
+      boundReplies = collection.map (x) -> x.attributes
+      @model.set 'replies', boundReplies
+
     renderDescendantsLink: ->
       stats = @countPosterity()
-      @descendantsLink = $ '<div/>'
-      @descendantsLink.html entryStats({stats, showMore: yes})
-      @descendantsLink.addClass 'showMore loadDescendants'
-      @$replies.append @descendantsLink
+      @$descendantsLink = $ '<div/>'
+      @$descendantsLink.html entryStatsTemplate({stats, showMore: yes})
+      @$descendantsLink.addClass 'showMore loadDescendants'
+      @$replies.append @$descendantsLink
 
     countPosterity: ->
       stats = unread: 0, total: 0
@@ -194,15 +218,22 @@ define [
         descendants: @options.showMoreDescendants
 
     remove: ->
+      return unless @model.canModerate()
       if confirm I18n.t('are_your_sure_delete', 'Are you sure you want to delete this entry?')
         @model.set 'deleted', true
         @model.destroy()
         html = deletedEntriesTemplate @toJSON()
-        @$('.entry_content:first').html html
+        @$('.entry-content:first').html html
 
     edit: ->
+      return unless @model.canModerate()
       @editor ?= new EntryEditor this
       @editor.edit() if not @editor.editing
+      # defer for rerender
+      @editor.on('display', => setTimeout(@focus, 0))
+
+    focus: =>
+      @$('.author').first().focus()
 
     addReply: (event, $el) ->
       @reply ?= new Reply this, focus: true
@@ -212,8 +243,20 @@ define [
         @renderTree()
         @treeView.collection.add entry
         @treeView.collection.fullCollection.add entry
+        @model.get('replies').push entry.attributes
         @trigger 'addReply'
         EntryView.trigger 'addReply', entry
+
+    toggleLike: (e) ->
+      e.preventDefault()
+      @model.toggleLike()
+
+    renderRating: =>
+      @$rateLink.toggleClass('discussion-rate-action--checked', !!@model.get('rating'))
+      @$rateLink.attr('aria-checked', if @model.get('rating') then 'true' else 'false')
+
+    renderRatingSum: =>
+      @$ratingSum.text(@model.ratingString())
 
     addReplyAttachment: (event, $el) ->
       event.preventDefault()
@@ -225,7 +268,7 @@ define [
 
     format: (attr, value) ->
       if attr is 'message'
-        value = convertApiUserContent(value)
+        value = apiUserContent.convert(value)
         @$el.find('.message').removeClass('enhanced')
         publish('userContent/change')
         value
@@ -233,5 +276,18 @@ define [
         value
       else
         htmlEscape value
+
+    handleKeyDown: (e) =>
+      nodeName = e.target.nodeName.toLowerCase()
+      return if nodeName == 'input' || nodeName == 'textarea'
+      if e.which == 68 # d
+        @remove()
+      else if e.which == 69 # e
+        @edit()
+      else if e.which == 82 # r
+        @addReply()
+      else return
+      e.preventDefault()
+      e.stopPropagation()
 
   _.extend EntryView, Backbone.Events

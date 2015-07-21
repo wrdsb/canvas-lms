@@ -17,16 +17,14 @@
  */
 
 define([
-  'i18n!wiki_pages',
   'jquery' /* $ */,
   'wikiSidebar',
   'jquery.ajaxJSON' /* ajaxJSON */,
-  'jquery.instructure_date_and_time' /* parseFromISO */,
   'jquery.instructure_forms' /* formSubmit, formErrors */,
   'jquery.instructure_misc_plugins' /* confirmDelete, fragmentChange, showIf */,
   'jquery.templateData' /* fillTemplateData */,
   'compiled/tinymce'
-], function(I18n, $, wikiSidebar) {
+], function($, wikiSidebar) {
 
   // private variables & methods
   function initEditViewSecondary(){
@@ -57,6 +55,8 @@ define([
     $('#wiki_edit_view_main .wiki_switch_views_link').click(function(event) {
       event.preventDefault();
       $("#wiki_page_body").editorBox('toggle');
+      // When JQuery is upgraded, use .addBack instead of .andSelf.
+      $(this).siblings(".wiki_switch_views_link").andSelf().toggle();
     });
     if ($("a#page_doesnt_exist_so_start_editing_it_now").length) {
       $("a#page_doesnt_exist_so_start_editing_it_now").click(function(event){
@@ -89,27 +89,6 @@ define([
         initEditViewSecondary();
         initShowViewSecondary();
       });
-    },
-
-    updateComment: function($comment, comment, top) {
-      if(!$comment || $comment.length == 0) {
-        $comment = $("#wiki_page_comment_blank").clone(true).removeAttr('id');
-        if(top) {
-          $("#add_wiki_page_comment_form").after($comment);
-        } else {
-          $("#wiki_page_comments .wiki_page_comment:last").after($comment);
-        }
-        $comment.show();
-      }
-      comment.created_at_formatted = $.parseFromISO(comment.created_at).datetime_formatted;
-      $comment.fillTemplateData({
-        data: comment,
-        id: 'wiki_page_commment_' + comment.id,
-        hrefValues: ['id'],
-        htmlValues: ['formatted_body']
-      });
-      $comment.toggleClass('current', comment.workflow_state == 'current');
-      $comment.toggleClass('deletable_comment', !!(comment.permissions && comment.permissions['delete']));
     }
   };
 
@@ -150,39 +129,6 @@ define([
       event.preventDefault();
       $(this).parents("ul").find("li").show();
       $(this).parent("li").remove();
-    });
-    $(".add_comment_link,.wiki_page_comment .cancel_button").click(function(event) {
-      event.preventDefault();
-      $(this).parents(".wiki_page_comment")
-        .toggleClass('commenting')
-        .find("textarea:visible")
-          .val("").focus().select();
-    });
-    $(".delete_comment_link").click(function(event) {
-      event.preventDefault();
-      $(this).parents(".wiki_page_comment").confirmDelete({
-        url: $(this).attr('href'),
-        message: I18n.t('delete_comment_confirmation', "Are you sure you want to delete this comment?"),
-        success: function() {
-          $(this).slideUp(function() {
-            $(this).remove();
-          });
-        }
-      });
-    });
-    $("#add_wiki_page_comment_form").formSubmit({
-      beforeSubmit: function(data) {
-        $(this).find("button").attr('disabled', true).filter(".submit_button").text(I18n.t('notices.adding_comment', "Adding Comment..."));
-      },
-      success: function(data) {
-        $(this).find("button").attr('disabled', false).filter(".submit_button").text(I18n.t('buttons.add_comment', "Add Comment"));
-        wikiPage.updateComment(null, data.wiki_page_comment, true);
-        $(this).removeClass('commenting');
-      },
-      error: function(data) {
-        $(this).formErrors(data);
-        $(this).find("button").attr('disabled', false).filter(".submit_button").text(I18n.t('notices.add_comment_failed', "Add comment failed, please try again"));
-      }
     });
     $("#add_wiki_page_form,#rename_wiki_page_form").formSubmit({
       success: function(data) {

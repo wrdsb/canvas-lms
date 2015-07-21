@@ -22,8 +22,12 @@ class InboxItem < ActiveRecord::Base
 
   # Associations
   belongs_to :asset,  :polymorphic => true
+  validates_inclusion_of :asset_type, :allow_nil => true, :in => ['DiscussionEntry', 'SubmissionComment', 'ContextMessage']
   belongs_to :author, :class_name => 'User', :foreign_key => :sender_id
   belongs_to :user
+
+  EXPORTABLE_ATTRIBUTES = [:id, :user_id, :sender_id, :asset_id, :subject, :body_teaser, :asset_type, :workflow_state, :sender, :created_at, :updated_at, :context_code]
+  EXPORTABLE_ASSOCIATIONS = [:asset, :author, :user]
 
   # Callbacks
   before_save       :flag_changed
@@ -33,14 +37,15 @@ class InboxItem < ActiveRecord::Base
   after_save        :update_user_inbox_items_count
 
   # Validations
+  validates_presence_of :user_id, :sender_id, :asset_id, :asset_type, :workflow_state
   validates_length_of :subject, :maximum => 255
 
   # Access control
   attr_accessible :user_id, :asset, :subject, :body_teaser, :sender_id
 
   # Named scopes
-  scope :active, where("workflow_state NOT IN ('deleted', 'retired', 'retired_unread')")
-  scope :unread, where(:workflow_state => 'unread')
+  scope :active, -> { where("workflow_state NOT IN ('deleted', 'retired', 'retired_unread')") }
+  scope :unread, -> { where(:workflow_state => 'unread') }
 
   # State machine
   workflow do

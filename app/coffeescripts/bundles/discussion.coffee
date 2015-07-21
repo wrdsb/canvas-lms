@@ -1,4 +1,5 @@
 require [
+  'i18n!discussions'
   'compiled/views/DiscussionTopic/EntryView'
   'compiled/models/DiscussionFilterState'
   'compiled/views/DiscussionTopic/DiscussionToolbarView'
@@ -14,7 +15,8 @@ require [
   'compiled/views/DiscussionTopic/TopicView'
   'compiled/views/DiscussionTopic/EntriesView'
   'compiled/jquery/sticky'
-], (EntryView, DiscussionFilterState, DiscussionToolbarView, DiscussionFilterResultsView, MarkAsReadWatcher, $, _, Backbone, Entry, MaterializedDiscussionTopic, SideCommentDiscussionTopic, EntryCollection, TopicView, EntriesView) ->
+  'compiled/jquery/ModuleSequenceFooter'
+], (I18n, EntryView, DiscussionFilterState, DiscussionToolbarView, DiscussionFilterResultsView, MarkAsReadWatcher, $, _, Backbone, Entry, MaterializedDiscussionTopic, SideCommentDiscussionTopic, EntryCollection, TopicView, EntriesView) ->
 
   descendants = 5
   children    = 10
@@ -37,7 +39,7 @@ require [
                     model: new Backbone.Model
                     filterModel: filterModel
 
-  entriesView   = new EntriesView
+  @entriesView   = new EntriesView
                     el: '#discussion_subentries'
                     collection: entries
                     descendants: descendants
@@ -87,7 +89,7 @@ require [
     router.navigate '',
       trigger: false
       replace: true
-    $container.scrollTo top
+    $container.scrollTop(top)
 
   ##
   # catch when an EntryView changes the read_state
@@ -119,11 +121,11 @@ require [
     EntryView.collapseRootEntries()
     scrollToTop()
 
-  toolbarView.on 'markAllAsRead', ->
+  topicView.on 'markAllAsRead', ->
     data.markAllAsRead()
     setAllReadStateAllViews('read')
 
-  toolbarView.on 'markAllAsUnread', ->
+  topicView.on 'markAllAsUnread', ->
     data.markAllAsUnread()
     setAllReadStateAllViews('unread')
 
@@ -135,33 +137,53 @@ require [
 
   filterModel.on 'reset', -> EntryView.expandRootEntries()
 
+  canReadReplies = ->
+    ENV.DISCUSSION.PERMISSIONS.CAN_READ_REPLIES
 
   ##
   # routes
+  router.route 'topic', 'topic', ->
+    $container.scrollTop $('#discussion_topic')
+    setTimeout ->
+      $('#discussion_topic .author').focus()
+      $container.one "scroll", -> router.navigate('')
+    , 10
   router.route 'entry-:id', 'id', entriesView.goToEntry
   router.route 'page-:page', 'page', (page) ->
     entriesView.render page
     # TODO: can get a little bouncy when the page isn't as tall as the previous
     scrollToTop()
   initEntries = (initial_entry) ->
-    data.fetch success: ->
-      entriesView.render()
-      Backbone.history.start
-        pushState: yes
-        root: ENV.DISCUSSION.APP_URL + '/'
-      if initial_entry
-        fetched_model = entries.get(initial_entry.id)
-        entries.remove(fetched_model) if fetched_model
-        entries.add(initial_entry)
+    if canReadReplies()
+      data.fetch success: ->
         entriesView.render()
-        router.navigate "entry-#{initial_entry.get 'id'}", yes
-    topicView.on 'addReply', (entry) ->
-      entries.add entry
-      router.navigate "entry-#{entry.get 'id'}", yes
-    MarkAsReadWatcher.init() unless ENV.DISCUSSION.MANUAL_MARK_AS_READ
+        Backbone.history.start
+          pushState: yes
+          root: ENV.DISCUSSION.APP_URL + '/'
+        if initial_entry
+          fetched_model = entries.get(initial_entry.id)
+          entries.remove(fetched_model) if fetched_model
+          entries.add(initial_entry)
+          entriesView.render()
+          router.navigate "entry-#{initial_entry.get 'id'}", yes
+      topicView.on 'addReply', (entry) ->
+        entries.add entry
+        router.navigate "entry-#{entry.get 'id'}", yes
+      MarkAsReadWatcher.init() unless ENV.DISCUSSION.MANUAL_MARK_AS_READ
+    else
+      $('#discussion_subentries span').text(I18n.t("You must log in to view replies"))
 
   topicView.render()
   toolbarView.render()
+
+  ##
+  # Add module sequence footer
+  if ENV.DISCUSSION.SEQUENCE?
+    $('#module_sequence_footer').moduleSequenceFooter(
+      assetType: ENV.DISCUSSION.SEQUENCE.ASSET_TYPE
+      assetID: ENV.DISCUSSION.SEQUENCE.ASSET_ID
+      courseID: ENV.DISCUSSION.SEQUENCE.COURSE_ID
+      )
 
   ##
   # Get the party started
@@ -172,5 +194,3 @@ require [
     topicView.on 'addReply', once
   else
     initEntries()
-
-

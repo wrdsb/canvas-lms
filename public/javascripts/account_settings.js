@@ -17,6 +17,7 @@ define([
 
   $(document).ready(function() {
     $("#account_settings").submit(function() {
+      var $this = $(this);
       $(".ip_filter .value").each(function() {
         $(this).removeAttr('name');
       }).filter(":not(.blank)").each(function() {
@@ -25,13 +26,26 @@ define([
           $(this).attr('name', 'account[ip_filters][' + name + ']');
         }
       });
+      var validations = {
+        object_name: 'account',
+        required: ['name'],
+        property_validations: {
+          'name': function(value){
+            if (value && value.length > 255) { return I18n.t("account_name_too_long", "Account Name is too long")}
+          }
+        }
+      };
+      var result = $this.validateForm(validations);
+      if(!result) {
+        return false;
+      }
     });
     $(".datetime_field").datetime_field();
     $("#add_notification_form textarea").editorBox().width('100%');
     $("#add_notification_form .datetime_field").bind('blur change', function() {
       var date = Date.parse($(this).val());
       if(date) {
-        date = date.toString($.datetime.defaultFormat);
+        date = $.datetimeString(date, {localized: false});
       }
       $(this).val(date);
     });
@@ -94,18 +108,6 @@ define([
         width: 400
       });
     });
-
-    $("#account_settings_enable_scheduler").change(function() {
-      var $enableCalendar2 = $("#account_settings_enable_scheduler");
-      var $showScheduler = $("#show_scheduler_checkbox");
-      if ($enableCalendar2.attr('checked')) {
-        $showScheduler.show();
-      }
-      else {
-        $showScheduler.hide();
-      }
-    });
-    $("#account_settings_enable_scheduler").trigger('change');
 
     $(".open_registration_delegated_warning_link").click(function(event) {
       event.preventDefault();
@@ -220,7 +222,7 @@ define([
       },
       success: function(data) {
         $(this).loadingImage('remove');
-        var report = $(this).find('input[name="report_type"]').val();
+        var report = $(this).attr('id').replace('_form', '');
         $("#" + report).find('.run_report_link').hide()
           .end().find('.configure_report_link').hide()
           .end().find('.running_report_message').show();
@@ -242,7 +244,6 @@ define([
           width: 400,
           title: I18n.t('titles.configure_report', 'Configure Report')
         });
-        $dialog.find(".datetime_field").datetime_field()
       }
       $dialog.dialog('open');
     })
@@ -289,8 +290,15 @@ define([
     displayCustomEmailFromName();
     $('.notification_from_name_option').trigger('change');
 
+    $('#account_settings_self_registration').change(function() {
+      $('#self_registration_type_radios').toggle(this.checked);
+    }).trigger('change');
+
+
+    $('.branding_section_toggler').on('change', function(){
+      $(this).prevAll('.branding_section').last().toggle(!this.checked)
+    })
+
   });
 
 });
-
-

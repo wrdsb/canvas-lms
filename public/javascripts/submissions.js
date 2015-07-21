@@ -17,18 +17,19 @@
  */
 
 define([
+  'compiled/util/round',
   'i18n!submissions',
   'jquery',
   'jquery.ajaxJSON' /* ajaxJSON */,
   'jquery.instructure_forms' /* ajaxJSONFiles */,
-  'jquery.instructure_date_and_time' /* parseFromISO */,
+  'jquery.instructure_date_and_time' /* datetimeString */,
   'jquery.instructure_misc_plugins' /* fragmentChange, showIf */,
   'jquery.loadingImg' /* loadingImg, loadingImage */,
   'jquery.templateData' /* fillTemplateData, getTemplateData */,
   'media_comments' /* mediaComment */,
   'compiled/jquery/mediaCommentThumbnail',
   'vendor/jquery.scrollTo' /* /\.scrollTo/ */
-], function(I18n, $) {
+], function(round, I18n, $) {
 
   $("#content").addClass('padless');
   var fileIndex = 1;
@@ -47,7 +48,7 @@ define([
         var comment = comments[idx].submission_comment;
         if($("#submission_comment_" + comment.id).length > 0) { continue; }
         var $comment = $("#comment_blank").clone(true).removeAttr('id');
-        comment.posted_at = $.parseFromISO(comment.created_at).datetime_formatted;
+        comment.posted_at = $.datetimeString(comment.created_at);
         $comment.fillTemplateData({
           data: comment,
           id: 'submission_comment_' + comment.id
@@ -73,6 +74,7 @@ define([
         $(".comments .comment_list").append($comment.show()).scrollTop(10000);
       }
       $(".comments .comment_list .play_comment_link").mediaCommentThumbnail('small');
+      $(".save_comment_button").attr('disabled',null);
       if(submission) {
         showGrade(submission);
         $(".submission_details").fillTemplateData({
@@ -86,8 +88,62 @@ define([
   }
   var showGrade = function(submission) {
     $(".grading_box").val(submission.grade != undefined && submission.grade !== null ? submission.grade : "");
-    $(".score").text(submission.score != undefined && submission.score !== null ? submission.score : "");
-    $(".published_score").text(submission.published_score != undefined && submission.published_score !== null ? submission.published_score : "");
+    $(".score").text(submission.score != undefined && submission.score !== null ? round(submission.score, round.DEFAULT) : "");
+    $(".published_score").text(submission.published_score != undefined && submission.published_score !== null ? round(submission.published_score, round.DEFAULT) : "");
+  }
+  var makeRubricAccessible = function($rubric) {
+    $rubric.show()
+    var $tabs = $rubric.find(":tabbable")
+    var tabBounds = [$tabs.first()[0], $tabs.last()[0]]
+    var keyCodes = {
+      9: "tab",
+      13: "enter",
+      27: "esc"
+    }
+    $(".hide_rubric_link").keydown(function(e) {
+      if (keyCodes[e.which] == "enter") {
+        e.preventDefault();
+        $(this).click();
+      };
+    });
+    $tabs.each(function(){
+      $(this).bind('keydown', function(e){
+        if(keyCodes[e.which] == "esc")
+          $(".hide_rubric_link").click()
+      });
+    });
+    $(tabBounds).each(function(e){
+      $(this).bind('keydown', function(e){
+        if (keyCodes[e.which] == "tab"){
+          var isLeavingHolder = $(this).is($(tabBounds).first()) ? e.shiftKey : !e.shiftKey;
+          if(isLeavingHolder) {
+            e.preventDefault();
+            var thisEl = this
+            var target = $.grep(tabBounds,function(el){return el != thisEl})
+            $(target).focus();
+          };
+        };
+      });
+    });
+    $rubric.siblings().attr('data-hide_from_rubric', true).end().
+      parentsUntil("#application").siblings().not("#aria_alerts").attr('data-hide_from_rubric', true)
+    $rubric.hide()
+  }
+  var closeRubric = function() {
+    $("#rubric_holder").fadeOut(function() {
+      toggleRubric($(this));
+      $(".assess_submission_link").focus();
+    });
+  }
+  var openRubric = function() {
+    $("#rubric_holder").fadeIn(function() {
+      toggleRubric($(this));
+      $(this).find('.hide_rubric_link').focus();
+    });
+  }
+  var toggleRubric = function($rubric) {
+    ariaSetting = $rubric.is(":visible");
+    $("#application").find("[data-hide_from_rubric]").attr("aria-hidden", ariaSetting)
   }
   $(document).ready(function() {
     $(".comments .comment_list .play_comment_link").mediaCommentThumbnail('small');
@@ -96,7 +152,7 @@ define([
       var top = $frame.offset().top;
       var height = $(window).height() - top;
       $frame.height(height);
-      $("#rubric_holder").css('maxHeight', height - 50).css('overflow', 'auto').css('zIndex', 5);
+      $("#rubric_holder").css({'maxHeight': height - 50, 'overflow': 'auto', 'zIndex': 5});
       $(".comments").height(height);
     }).triggerHandler('resize');
     $(".comments_link").click(function(event) {
@@ -117,7 +173,7 @@ define([
       $(document).triggerHandler('grading_change');
     });
     $(document).bind('grading_change', function(event) {
-//    $(".grading_value,.grading_comment").bind('change', function(event) {
+      $(".save_comment_button").attr('disabled','disabled');
       $(".submission_header").loadingImage();
       var url = $(".update_submission_url").attr('href');
       var method = $(".update_submission_url").attr('title');
@@ -185,6 +241,9 @@ define([
           }
         }
         if(!found) {
+          if (!data.rubric_assessment) {
+            data = { rubric_assessment: data };
+          }
           rubricAssessments.push(data);
           var $option = $(document.createElement('option'));
           $option.val(assessment.id).text(assessment.assessor_name).attr('id', 'rubric_assessment_option_' + assessment.id);
@@ -198,18 +257,19 @@ define([
         if (submission) {
           showGrade(submission);
         }
-        $("#rubric_holder").fadeOut();
+        closeRubric();
       });
     });
-    $("#rubric_holder .rubric").css('width', 'auto').css('marginTop', 0);
+    $("#rubric_holder .rubric").css({'width': 'auto', 'marginTop': 0});
+    makeRubricAccessible($("#rubric_holder"));
     $(".hide_rubric_link").click(function(event) {
       event.preventDefault();
-      $("#rubric_holder").fadeOut();
+      closeRubric();
     });
     $(".assess_submission_link").click(function(event) {
       event.preventDefault();
       $("#rubric_assessments_select").change();
-      $("#rubric_holder").fadeIn();
+      openRubric();
     });
     $("#rubric_assessments_select").change(function() {
       var id = $(this).val();

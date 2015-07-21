@@ -16,13 +16,16 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
+# @API Accounts
 class SubAccountsController < ApplicationController
+  include Api::V1::Account
+
   # these actions assume that if we're authorized to act on @account , we're
   # authorized to act on all its sub-accounts too.
 
   def sub_accounts_of(account, current_depth = 0)
     account_data = @accounts[account.id] = { :account => account, :course_count => 0}
-    sub_accounts = account.sub_accounts.active.order(:name).limit(101) unless current_depth == 2
+    sub_accounts = account.sub_accounts.active.order(Account.best_unicode_collation_key('name')).limit(101) unless current_depth == 2
     sub_account_ids = (sub_accounts || []).map(&:id)
     if current_depth == 2 || sub_accounts.length > 100
       account_data[:sub_account_ids] = []
@@ -85,17 +88,41 @@ class SubAccountsController < ApplicationController
   
   def show
     @sub_account = subaccount_or_self(params[:id])
-    render :json => @sub_account.to_json(:include => [:sub_accounts, :courses], :methods => [:course_count, :sub_account_count])
+    ActiveRecord::Associations::Preloader.new(@sub_account, [{:sub_accounts => [:parent_account, :root_account]}]).run
+    render :json => @sub_account.as_json(:only => [:id, :name], :methods => [:course_count, :sub_account_count],
+                                         :include => [:sub_accounts => {:only => [:id, :name], :methods => [:course_count, :sub_account_count]}])
   end
   
+  # @API Create a new sub-account
+  # Add a new sub-account to a given account.
+  #
+  # @argument account[name] [Required, String]
+  #   The name of the new sub-account.
+  #
+  # @argument account[default_storage_quota_mb] [Integer]
+  #   The default course storage quota to be used, if not otherwise specified.
+  #
+  # @argument account[default_user_storage_quota_mb] [Integer]
+  #   The default user storage quota to be used, if not otherwise specified.
+  #
+  # @argument account[default_group_storage_quota_mb] [Integer]
+  #   The default group storage quota to be used, if not otherwise specified.
+  #
+  # @returns [Account]
   def create
-    @parent_account = subaccount_or_self(params[:account].delete(:parent_account_id))
+    if params[:account][:parent_account_id]
+      parent_id = params[:account].delete(:parent_account_id)
+    else
+      parent_id = params[:account_id]
+    end
+    @parent_account = subaccount_or_self(parent_id)
+    return unless authorized_action(@parent_account, @current_user, :manage_account_settings)
     @sub_account = @parent_account.sub_accounts.build(params[:account])
     @sub_account.root_account = @context.root_account
     if @sub_account.save
-      render :json => @sub_account.to_json
+      render :json => account_json(@sub_account, @current_user, session, [])
     else
-      render :json => @sub_account.errors.to_json
+      render :json => @sub_account.errors
     end
   end
   
@@ -103,16 +130,19 @@ class SubAccountsController < ApplicationController
     @sub_account = subaccount_or_self(params[:id])
     params[:account].delete(:parent_account_id)
     if @sub_account.update_attributes(params[:account])
-      render :json => @sub_account.to_json
+      render :json => account_json(@sub_account, @current_user, session, [])
     else
-      render :json => @sub_account.errors.to_json
+      render :json => @sub_account.errors
     end
   end
   
   def destroy
     @sub_account = subaccount_or_self(params[:id])
+    if @sub_account.associated_courses.not_deleted.exists?
+      return render json: { message: I18n.t("You can't delete a sub-account that has courses in it.") }, status: 409
+    end
     @sub_account.destroy
-    render :json => @sub_account.to_json
+    render :json => @sub_account
   end
 
   protected

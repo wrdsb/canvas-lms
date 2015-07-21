@@ -4,8 +4,11 @@ define [
   'Backbone'
   'compiled/backbone-ext/DefaultUrlMixin'
   'compiled/models/TurnitinSettings'
+  'compiled/models/DateGroup'
   'compiled/collections/AssignmentOverrideCollection'
-], ($, _, {Model}, DefaultUrlMixin, TurnitinSettings, AssignmentOverrideCollection ) ->
+  'compiled/collections/DateGroupCollection'
+  'i18n!assignments'
+], ($, _, {Model}, DefaultUrlMixin, TurnitinSettings, DateGroup, AssignmentOverrideCollection, DateGroupCollection, I18n) ->
 
   class Assignment extends Model
     @mixin DefaultUrlMixin
@@ -13,12 +16,22 @@ define [
 
     urlRoot: -> @_defaultUrl()
 
+    defaults:
+      "publishable": true
+      "hidden": false
+      "unpublishable": true
+
     initialize: ->
-      overrides = @get('assignment_overrides')
-      @set 'assignment_overrides',
-        new AssignmentOverrideCollection(overrides)
-      @set 'turnitin_settings', new TurnitinSettings(@get 'turnitin_settings'),
-        silent: true
+      if (overrides = @get('assignment_overrides'))?
+        @set 'assignment_overrides', new AssignmentOverrideCollection(overrides)
+      if (turnitin_settings = @get('turnitin_settings'))?
+        @set 'turnitin_settings', new TurnitinSettings(turnitin_settings),
+          silent: true
+      if (all_dates = @get('all_dates'))?
+        @set 'all_dates', new DateGroupCollection(all_dates)
+      if (@postToSISEnabled())
+        if !@get('id') && @get('post_to_sis') != false
+          @set 'post_to_sis', true
 
     isQuiz: => @_hasOnlyType 'online_quiz'
     isDiscussionTopic: => @_hasOnlyType 'discussion_topic'
@@ -92,6 +105,21 @@ define [
       else if _.include submissionTypes, 'external_tool' then 'external_tool'
       else 'online'
 
+    expectsSubmission: =>
+      submissionTypes = @_submissionTypes()
+      submissionTypes.length > 0 && !_.include(submissionTypes, "") && !_.include(submissionTypes, 'none') && !_.include(submissionTypes, 'not_graded') && !_.include(submissionTypes, 'on_paper') && !_.include(submissionTypes, 'external_tool')
+
+    allowedToSubmit: =>
+      submissionTypes = @_submissionTypes()
+      @expectsSubmission() && !@get('locked_for_user') && !_.include(submissionTypes, 'online_quiz') && !_.include(submissionTypes, 'attendance')
+
+    hasSubmittedSubmissions: =>
+      @get('has_submitted_submissions')
+
+    withoutGradedSubmission: =>
+      sub = @get('submission')
+      !sub? || sub.withoutGradedSubmission()
+
     acceptsOnlineUpload: =>
       !! _.include @_submissionTypes(), 'online_upload'
 
@@ -106,12 +134,20 @@ define [
 
     isOnlineSubmission: =>
       _.any @_submissionTypes(), (thing) ->
-          thing in ['online', 'online_text_entry',
-            'media_recording', 'online_url', 'online_upload']
+        thing in ['online', 'online_text_entry',
+          'media_recording', 'online_url', 'online_upload']
+
+    postToSIS: (postToSisBoolean) =>
+      return @get 'post_to_sis' unless arguments.length > 0
+      @set 'post_to_sis', postToSisBoolean
 
     peerReviews: (peerReviewBoolean) =>
       return @get 'peer_reviews' unless arguments.length > 0
       @set 'peer_reviews', peerReviewBoolean
+
+    anonymousPeerReviews: (anonymousPeerReviewBoolean) =>
+      return @get 'anonymous_peer_reviews' unless arguments.length > 0
+      @set 'anonymous_peer_reviews', anonymousPeerReviewBoolean
 
     automaticPeerReviews: (autoPeerReviewBoolean) =>
       return @get 'automatic_peer_reviews' unless arguments.length > 0
@@ -155,6 +191,11 @@ define [
       return @get( 'group_category_id' ) unless arguments.length > 0
       @set 'group_category_id', id
 
+    canGroup: -> !@get('has_submitted_submissions')
+
+    differentiatedAssignmentsEnabled: ->
+      ENV?.DIFFERENTIATED_ASSIGNMENTS_ENABLED || false
+
     gradingStandardId: (id) =>
       return @get('grading_standard_id') unless arguments.length > 0
       @set 'grading_standard_id', id
@@ -172,32 +213,87 @@ define [
       @set 'external_tool_tag_attributes', tagAttributes
 
     isSimple: =>
+      overrides = @get('assignment_overrides')
       @gradingType() == 'points' and
         @submissionType() == 'none' and
         !@groupCategoryId() and
         !@peerReviews() and
         !@frozen() and
-        @get('assignment_overrides').isSimple()
+        (!overrides or overrides.isSimple())
 
     isLetterGraded: =>
       @gradingType() == 'letter_grade'
 
+    isGpaScaled: =>
+      @gradingType() == 'gpa_scale'
+
     published: (newPublished) =>
       return @get 'published' unless arguments.length > 0
       @set 'published', newPublished
+
+    position: (newPosition) ->
+      return @get('position') || 0 unless arguments.length > 0
+      @set 'position', newPosition
 
     iconType: =>
       return 'quiz' if @isQuiz()
       return 'discussion' if @isDiscussionTopic()
       return 'assignment'
 
-    htmlUrl: => @get 'html_url'
+    objectType: =>
+      return 'Quiz' if @isQuiz()
+      return 'Discussion' if @isDiscussionTopic()
+      return 'Assignment'
+
+    htmlUrl: =>
+      @get 'html_url'
+
+    htmlEditUrl: =>
+      "#{@get 'html_url'}/edit"
+
+    labelId: =>
+      return @id
+
+    postToSISEnabled: =>
+      return ENV.POST_TO_SIS
+
+    defaultDates: =>
+      group = new DateGroup
+        due_at:    @get("due_at")
+        unlock_at: @get("unlock_at")
+        lock_at:   @get("lock_at")
+
+    multipleDueDates: =>
+      dateGroups = @get("all_dates")
+      dateGroups && dateGroups.length > 1
+
+    nonBaseDates: =>
+      dateGroups = @get("all_dates")
+      return false unless dateGroups
+      withouBase = _.filter(dateGroups.models, (dateGroup) =>
+        dateGroup && !dateGroup.get("base")
+      )
+      withouBase.length > 0
+
+    allDates: =>
+      groups = @get("all_dates")
+      models = (groups and groups.models) or []
+      result = _.map models, (group) -> group.toJSON()
+
+    singleSectionDueDate: =>
+      if !@multipleDueDates() && !@dueAt()
+        allDates = @allDates()
+        for section in allDates
+          if section.dueAt
+            return section.dueAt.toISOString()
+      else
+        return @dueAt()
 
     toView: =>
       fields = [
         'name', 'dueAt','description','pointsPossible', 'lockAt', 'unlockAt',
         'gradingType', 'notifyOfUpdate', 'peerReviews', 'automaticPeerReviews',
-        'peerReviewCount', 'peerReviewsAssignAt',
+        'peerReviewCount', 'peerReviewsAssignAt', 'anonymousPeerReviews',
         'acceptsOnlineUpload','acceptsMediaRecording', 'submissionType',
         'acceptsOnlineTextEntries', 'acceptsOnlineURL', 'allowedExtensions',
         'restrictFileExtensions', 'isOnlineSubmission', 'isNotGraded',
@@ -205,10 +301,14 @@ define [
         'turnitinAvailable','turnitinEnabled',
         'gradeGroupStudentsIndividually', 'groupCategoryId', 'frozen',
         'frozenAttributes', 'freezeOnCopy', 'canFreeze', 'isSimple',
-        'gradingStandardId', 'isLetterGraded', 'assignmentGroupId', 'iconType',
-        'published', 'htmlUrl'
+        'gradingStandardId', 'isLetterGraded', 'isGpaScaled', 'assignmentGroupId', 'iconType',
+        'published', 'htmlUrl', 'htmlEditUrl', 'labelId', 'position', 'postToSIS',
+        'multipleDueDates', 'nonBaseDates', 'allDates', 'isQuiz', 'singleSectionDueDate'
       ]
-      hash = {}
+      if ENV.DIFFERENTIATED_ASSIGNMENTS_ENABLED
+        fields.push 'isOnlyVisibleToOverrides'
+
+      hash = id: @get 'id'
       for field in fields
         hash[field] = @[field]()
       hash
@@ -218,15 +318,32 @@ define [
       data = @_filterFrozenAttributes(data)
       if @alreadyScoped then data else { assignment: data }
 
-    parse: (data) ->
-      overrides = data.assignment_overrides
-      if overrides?
-        data.assignment_overrides =
-          new AssignmentOverrideCollection overrides
+    search: (regex) ->
+      if @get('name').match(regex)
+        @set 'hidden', false
+        return true
       else
-        data.assignment_overrides = new AssignmentOverrideCollection
-      data.turnitin_settings = new TurnitinSettings data.turnitin_settings
+        @set 'hidden', true
+        return false
+
+    endSearch: ->
+      @set 'hidden', false
+
+    parse: (data) ->
+      data = super data
+      if (overrides = data.assignment_overrides)?
+        data.assignment_overrides = new AssignmentOverrideCollection overrides
+      if (turnitin_settings = data.turnitin_settings)?
+        data.turnitin_settings = new TurnitinSettings turnitin_settings
       data
+
+    # Update the Assignment model instance to not parse results from the
+    # server. This is a hack to work around the fact that the server will
+    # always return an overridden due date after a successful PUT request. If
+    # that is parsed and set on the model, and then another save() is called,
+    # the assignments default due date will be updated accidentally. Ugh.
+    doNotParse: ->
+      @parse = -> {}
 
     # @api private
     _submissionTypes: =>
@@ -266,3 +383,13 @@ define [
       @lockAt null
       @unlockAt null
       this
+
+    publish: -> @save("published", true)
+    unpublish: -> @save("published", false)
+
+    disabledMessage: ->
+      I18n.t('cant_unpublish_when_students_submit', "Can't unpublish if there are student submissions")
+
+    isOnlyVisibleToOverrides: (override_flag) ->
+      return @get('only_visible_to_overrides') || false unless arguments.length > 0
+      @set 'only_visible_to_overrides', override_flag

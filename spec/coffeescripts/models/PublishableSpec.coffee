@@ -7,10 +7,6 @@ define ['compiled/models/Publishable'], (Publishable) ->
     setup: ->
     teardown: ->
 
-  test 'initialize stores the url for use in url generation', ->
-    cModule = buildModule true
-    equal cModule.url(), '/api/1/2/3'
-
   test 'publish updates the state of the model', ->
     cModule = buildModule false
     cModule.save = ()->
@@ -19,7 +15,7 @@ define ['compiled/models/Publishable'], (Publishable) ->
 
   test 'publish saves to the server', ->
     cModule = buildModule true
-    saveStub = sinon.stub cModule, 'save'
+    saveStub = @stub cModule, 'save'
     cModule.publish()
     ok saveStub.calledOnce
 
@@ -31,7 +27,7 @@ define ['compiled/models/Publishable'], (Publishable) ->
 
   test 'unpublish saves to the server', ->
     cModule = buildModule true
-    saveStub = sinon.stub cModule, 'save'
+    saveStub = @stub cModule, 'save'
     cModule.unpublish()
     ok saveStub.calledOnce
 

@@ -21,17 +21,20 @@ define [
       '.view_app_center_link': '$viewAppCenterLink'
       '.add_tool_link': '$addToolLink'
       '#app_center_filter': '$appCenterFilter'
+      '#app_center_filter_wrapper': '$appCenterFilterWrapper'
       '[data-view=appFull]': '$appFull'
 
     events:
       'click .view_tools_link': 'showExternalToolsView'
       'click .view_app_center_link': 'showAppCenterView'
       'click .app': 'showAppFullView'
+      'keyup .app': 'showAppFullView'
       'click .add_tool_link': 'addTool'
       'click [data-edit-external-tool]': 'editTool'
       'click [data-delete-external-tool]': 'deleteTool'
       'change #app_center_filter': 'filterApps'
       'keyup #app_center_filter': 'filterApps'
+      'click [data-toggle-installed-state]': 'toggleInstalledState'
 
     currentAppCenterPosition: 0
 
@@ -50,7 +53,7 @@ define [
     hideAppCenterView: =>
       @currentAppCenterPosition = $(document).scrollTop()
       @appCenterView.hide()
-      @$appCenterFilter.hide()
+      @$appCenterFilterWrapper.hide()
       @$viewAppCenterLink.show() if @options.appCenterEnabled
 
     removeAppFullView: ->
@@ -64,26 +67,31 @@ define [
       @$addToolLink.show()
       @externalToolsView.collection.fetch()
       @externalToolsView.show()
+      delay = (ms, func) -> setTimeout func, ms
+      delay 1, -> @$(".view_app_center_link").first().focus()
 
     showAppCenterView: =>
       @removeAppFullView()
       @hideExternalToolsView()
       @$viewAppCenterLink.hide()
       @appCenterView.show()
-      @$appCenterFilter.show()
+      @$appCenterFilterWrapper.show()
       $(document).scrollTop(@currentAppCenterPosition)
+      delay = (ms, func) -> setTimeout func, ms
+      delay 1, -> @$(".view_tools_link").first().focus()
 
     showAppFullView: (event) ->
-      @hideExternalToolsView()
-      @hideAppCenterView()
-      view = @$(event.currentTarget).data('view')
-      @appFullView = new AppFullView
-        model: view.model
-      @appFullView.on 'cancel', @showAppCenterView, this
-      @appFullView.on 'addApp', @addApp, this
-      @appFullView.render()
-      @$appFull.append @appFullView.$el
-      
+      if event.type != 'keyup' || event.keyCode == 32
+        @hideExternalToolsView()
+        @hideAppCenterView()
+        view = @$(event.currentTarget).data('view')
+        @appFullView = new AppFullView
+          model: view.model
+        @appFullView.on 'cancel', @showAppCenterView, this
+        @appFullView.on 'addApp', @addApp, this
+        @appFullView.render()
+        @$appFull.append @appFullView.$el
+
     addApp: ->
       newTool = new ExternalTool
       newTool.on 'sync', @onToolSync
@@ -92,19 +100,20 @@ define [
     addTool: ->
       newTool = new ExternalTool
       newTool.on 'sync', @onToolSync
-      @editView = new EditView(model: newTool).render()
+      @editView = new EditView(model: newTool, title: I18n.t 'dialog_title_add_tool', 'Add New App').render()
 
     editTool: (event) ->
       view = @$(event.currentTarget).closest('.external_tool_item').data('view')
       tool = view.model
       tool.on 'sync', @onToolSync
       @editView = new EditView(model: tool).render()
+      false
 
     onToolSync: (model) =>
       @addAppView.remove() if @addAppView
       @editView.remove() if @editView
       @showExternalToolsView()
-      $.flashMessage(htmlEscape(I18n.t('app_saved_message', "%{app} saved successfully!", { app: model.get('name') })))
+      $.flashMessage(I18n.t('app_saved_message', "%{app} saved successfully!", { app: model.get('name') }))
 
     filterApps: (event) =>
       @appCenterView.filterText = @$appCenterFilter.val()
@@ -114,7 +123,7 @@ define [
       view = @$(event.currentTarget).closest('.external_tool_item').data('view')
       tool = view.model
       msg = I18n.t 'remove_tool', "Are you sure you want to remove this tool?"
-      dialog = $("<div>#{msg}</div>").dialog
+      dialog = $("<div>#{htmlEscape msg}</div>").dialog
         modal: true,
         resizable: false
         title: I18n.t('delete', 'Delete') + ' ' + tool.get('name') + '?'
@@ -124,7 +133,20 @@ define [
         ,
           text: I18n.t 'buttons.delete', 'Delete'
           click: =>
-            tool.on('sync', => @externalToolsView.collection.fetch())
+            tool.on('sync', =>
+                @externalToolsView.collection.fetch()
+                @appCenterView.collection.fetch()
+            )
             tool.destroy()
             dialog.dialog 'close'
         ]
+      false
+
+    toggleInstalledState: (event) =>
+      elm = @$(event.currentTarget)
+      @appCenterView.targetInstalledState = elm.data('toggle-installed-state')
+      @$('[data-installed-state] > a').attr('aria-selected', 'false')
+      @$('[data-installed-state]').removeClass('active')
+      @$('[data-installed-state="' + @appCenterView.targetInstalledState + '"]').addClass('active')
+      @$('[data-installed-state="' + @appCenterView.targetInstalledState + '"] > a').attr('aria-selected', 'true')
+      @appCenterView.render()

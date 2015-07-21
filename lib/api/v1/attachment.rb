@@ -19,6 +19,12 @@
 module Api::V1::Attachment
   include Api::V1::Json
   include Api::V1::Locked
+  include Api::V1::User
+  include Api::V1::UsageRights
+
+  def can_view_hidden_files?(context=@context, user=@current_user, session=nil)
+    context.grants_any_right?(user, session, :manage_files, :read_as_admin)
+  end
 
   def attachments_json(files, user, url_options = {}, options = {})
     files.map do |f|
@@ -27,7 +33,16 @@ module Api::V1::Attachment
   end
 
   def attachment_json(attachment, user, url_options = {}, options = {})
+    hash = {
+      'id' => attachment.id,
+      'folder_id' => attachment.folder_id,
+      'display_name' => attachment.display_name,
+      'filename' => attachment.filename,
+    }
+    return hash if options[:only] && options[:only].include?('names')
+
     options.reverse_merge!(submission_attachment: false)
+    includes = options[:include] || []
 
     # it takes loads of queries to figure out that a teacher doesn't have
     # :update permission on submission attachments.  we'll handle the
@@ -35,16 +50,16 @@ module Api::V1::Attachment
     # of queries
     submission_attachment = options[:submission_attachment]
 
-    # this seems like a stupid amount of branching but it's too avoid expensive
+    # this seems like a stupid amount of branching but it avoids expensive
     # permission checks
     hidden_for_user = if submission_attachment
                         false
                       elsif !attachment.hidden?
                         false
-                      elsif options.has_key?(:can_manage_files)
-                        options[:can_manage_files]
+                      elsif options.has_key?(:can_view_hidden_files)
+                        options[:can_view_hidden_files]
                       else
-                        !attachment.grants_right?(user, nil, :update)
+                        !can_view_hidden_files?(attachment.context, user)
                       end
 
     downloadable = !attachment.locked_for?(user, check_policies: true)
@@ -55,7 +70,9 @@ module Api::V1::Attachment
     elsif !downloadable
       ''
     else
-      file_download_url(attachment, { :verifier => attachment.uuid, :download => '1', :download_frd => '1' }.merge(url_options))
+      h = { :download => '1', :download_frd => '1' }
+      h.merge!(:verifier => attachment.uuid) unless options[:omit_verifier_in_app] && respond_to?(:in_app?, true) && in_app?
+      file_download_url(attachment, h.merge(url_options))
     end
 
     thumbnail_download_url = if downloadable
@@ -64,11 +81,8 @@ module Api::V1::Attachment
       ''
     end
 
-    hash = {
-      'id' => attachment.id,
+    hash.merge!(
       'content-type' => attachment.content_type,
-      'display_name' => attachment.display_name,
-      'filename' => attachment.filename,
       'url' => url,
       'size' => attachment.size,
       'created_at' => attachment.created_at,
@@ -79,8 +93,26 @@ module Api::V1::Attachment
       'lock_at' => attachment.lock_at,
       'hidden_for_user' => hidden_for_user,
       'thumbnail_url' => thumbnail_download_url,
-    }
+      'modified_at' => attachment.modified_at ? attachment.modified_at : attachment.updated_at
+    )
     locked_json(hash, attachment, user, 'file')
+
+    if includes.include? 'user'
+      context = attachment.context
+      context = :profile if context == user
+      hash['user'] = user_display_json(attachment.user, context)
+    end
+    if includes.include? 'preview_url'
+      hash['preview_url'] = attachment.crocodoc_url(user) ||
+                            attachment.canvadoc_url(user)
+    end
+    if includes.include? 'enhanced_preview_url'
+      hash['preview_url'] = context_url(attachment.context, :context_file_file_preview_url, attachment, annotate: 0)
+    end
+    if includes.include? 'usage_rights'
+      hash['usage_rights'] = usage_rights_json(attachment.usage_rights, user)
+    end
+
     hash
   end
 
@@ -89,15 +121,18 @@ module Api::V1::Attachment
   # error on failure.
   def api_attachment_preflight(context, request, opts = {})
     params = opts[:params] || request.params
+
     @attachment = Attachment.new
+    @attachment.shard = context.shard
     @attachment.context = context
-    @attachment.filename = params[:name]
+    @attachment.filename = params[:name]  || params[:filename]
     atts = process_attachment_params(params)
     atts.delete(:display_name)
     @attachment.attributes = atts
-    @attachment.submission_attachment = true if opts[:submission_attachment]
     @attachment.file_state = 'deleted'
     @attachment.workflow_state = 'unattached'
+    @attachment.user = @current_user
+    @attachment.modified_at = Time.now.utc
     @attachment.content_type = params[:content_type].presence || Attachment.mimetype(@attachment.filename)
     # Handle deprecated folder path
     params[:parent_folder_path] ||= params[:folder]
@@ -125,6 +160,7 @@ module Api::V1::Attachment
         end
       end
     end
+    @attachment.locked = true if @attachment.usage_rights_id.nil? && context.respond_to?(:feature_enabled?) && context.feature_enabled?(:usage_rights_required)
     @attachment.save!
     if params[:url]
       @attachment.send_later_enqueue_args(:clone_url, { :priority => Delayed::LOW_PRIORITY, :max_attempts => 1, :n_strand => 'file_download' }, params[:url], duplicate_handling, opts[:check_quota])
@@ -135,7 +171,7 @@ module Api::V1::Attachment
       json = @attachment.ajax_upload_params(@current_pseudonym,
                                                      api_v1_files_create_url(:on_duplicate => duplicate_handling, :quota_exemption => quota_exemption),
                                                      api_v1_files_create_success_url(@attachment, :uuid => @attachment.uuid, :on_duplicate => duplicate_handling, :quota_exemption => quota_exemption),
-                                                     :ssl => request.ssl?, :file_param => opts[:file_param]).
+                                                     :ssl => request.ssl?, :file_param => opts[:file_param], no_redirect: params[:no_redirect]).
       slice(:upload_url,:upload_params,:file_param)
     end
 
@@ -145,9 +181,14 @@ module Api::V1::Attachment
       render :json => json
     end
   end
-  
+
+  def api_attachment_preflight_json(context, request, opts={})
+    opts[:return_json] = true
+    {:attachments => [api_attachment_preflight(context, request, opts)]}
+  end
+
   def check_quota_after_attachment(request)
-    exempt = request.params[:quota_exemption] == @attachment.quota_exemption_key
+    exempt = @attachment.verify_quota_exemption_key(request.params[:quota_exemption])
     if !exempt && Attachment.over_quota?(@attachment.context, @attachment.size)
       render(:json => {:message => 'file size exceeds quota limits'}, :status => :bad_request)
       return false
@@ -172,5 +213,10 @@ module Api::V1::Attachment
     new_atts[:locked] = value_to_boolean(params[:locked]) if params.has_key?(:locked)
     new_atts[:hidden] = value_to_boolean(params[:hidden]) if params.has_key?(:hidden)
     new_atts
+  end
+
+  def context_files_url
+    # change if context_api_index route is expanded to other contexts besides courses
+    api_v1_course_files_url(@context)
   end
 end

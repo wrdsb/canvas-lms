@@ -29,14 +29,14 @@ describe 'appointment_deleted_for_user.twitter' do
                      :data => {:updating_user => @teacher,
                                        :cancel_reason => "just because"})
 
-    @message.body.should include('some title')
-    @message.main_link.should be_present
+    expect(@message.body).to include('some title')
+    expect(@message.main_link).to be_present
   end
 
   it "should render for groups" do
     user = user_model(:name => 'bob')
     @course = course_model
-    cat = @course.group_categories.create
+    cat = group_category
     @group = cat.groups.create(:context => @course)
     @group.users << user
     appointment_participant_model(:participant => @group, :course => @course)
@@ -46,7 +46,7 @@ describe 'appointment_deleted_for_user.twitter' do
                      :data => {:updating_user => @teacher,
                                        :cancel_reason => "just because"})
 
-    @message.body.should include('some title')
-    @message.main_link.should be_present
+    expect(@message.body).to include('some title')
+    expect(@message.main_link).to be_present
   end
 end

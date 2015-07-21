@@ -2,6 +2,7 @@ define [
   'jquery'
   'underscore'
   'i18n!EditAppointmentGroupDetails'
+  'str/htmlEscape'
   'compiled/calendar/TimeBlockList'
   'jst/calendar/editAppointmentGroup'
   'jst/calendar/genericSelect'
@@ -11,16 +12,30 @@ define [
   'jquery.ajaxJSON'
   'jquery.disableWhileLoading'
   'jquery.instructure_forms'
-], ($, _, I18n, TimeBlockList, editAppointmentGroupTemplate, genericSelectTemplate, sectionCheckboxesTemplate, ContextSelector, preventDefault) ->
+], ($, _, I18n, htmlEscape, TimeBlockList, editAppointmentGroupTemplate, genericSelectTemplate, sectionCheckboxesTemplate, ContextSelector, preventDefault) ->
 
   class EditAppointmentGroupDetails
     constructor: (selector, @apptGroup, @contexts, @closeCB) ->
       @currentContextInfo = null
+      @appointment_group = _.extend(
+        {use_group_signup: @apptGroup.participant_type is 'Group'}
+          @apptGroup
+      )
 
       $(selector).html editAppointmentGroupTemplate({
         title: @apptGroup.title
         contexts: @contexts
-        appointment_group: @apptGroup
+        appointment_group: @appointment_group,
+        num_minutes: '<input type="number" name="duration" value="30" style="width: 40px"
+              aria-label="' + htmlEscape(I18n.t('Minutes per slot')) + '" />'
+        num_participants: '<input type="number" name="participants_per_appointment"
+                value="' + htmlEscape(@appointment_group.participants_per_appointment) + '" min="1"
+                style="width: 40px;"
+                aria-label="' + htmlEscape(I18n.t('Max users/groups per appointment')) + '" />'
+        num_appointments: '<input type="number" name="max_appointments_per_participant"
+              value="' + htmlEscape(@appointment_group.max_appointments_per_participant) +  '" min="1"
+              style="width: 40px"
+              aria-label="' + htmlEscape(I18n.t('Maximum number of appointments a participant can attend')) + '" />'
       })
 
       @contextsHash = {}
@@ -51,7 +66,7 @@ define [
 
       @form.find('.ag_contexts_selector').click preventDefault @toggleContextsMenu
 
-      timeBlocks = ([appt.start, appt.end, true] for appt in @apptGroup.appointmentEvents || [] )
+      timeBlocks = ([appt.start_at, appt.end_at, true] for appt in @apptGroup.appointments || [] )
       @timeBlockList = new TimeBlockList(@form.find(".time-block-list-body"), @form.find(".splitter"), timeBlocks)
 
       @form.find('[name="slot_duration"]').change (e) =>
@@ -68,7 +83,7 @@ define [
         @form.find(".group-signup").toggle(checked)
       @form.find(".group-signup-checkbox").change()
 
-      $perSlotCheckbox = @form.find('[name="per_slot_option"]')
+      $perSlotCheckbox = @form.find('.appointment-blocks-per-slot-option-button')
       $perSlotInput =    @form.find('[name="participants_per_appointment"]')
       slotChangeHandler = (e) => @perSlotChange($perSlotCheckbox, $perSlotInput)
       $.merge($perSlotCheckbox, $perSlotInput).on 'change', slotChangeHandler
@@ -78,7 +93,7 @@ define [
       else
         $perSlotInput.attr('disabled', true)
 
-      $maxPerStudentCheckbox = @form.find('#max-per-student-option')
+      $maxPerStudentCheckbox = @form.find('.max-per-student-option')
       $maxPerStudentInput =    @form.find('[name="max_appointments_per_participant"]')
       maxApptHandler = (e) => @maxStudentAppointmentsChange($maxPerStudentCheckbox, $maxPerStudentInput)
       $.merge($maxPerStudentCheckbox, $maxPerStudentInput).on 'change', maxApptHandler
@@ -149,7 +164,7 @@ define [
         'appointment_group[location_name]': data.location
       }
 
-      if data.max_appointments_per_participant_option
+      if data.max_appointments_per_participant_option is '1'
         if data.max_appointments_per_participant < 1
           $('[name="max_appointments_per_participant"]').errorBox(
             I18n.t('bad_max_appts', 'You must allow at least one appointment per participant'))
@@ -163,11 +178,11 @@ define [
       return false unless @timeBlockList.validate()
       for range in @timeBlockList.blocks()
         params['appointment_group[new_appointments]'].push([
-          $.dateToISO8601UTC($.unfudgeDateForProfileTimezone(range[0])),
-          $.dateToISO8601UTC($.unfudgeDateForProfileTimezone(range[1]))
+          $.unfudgeDateForProfileTimezone(range[0]).toISOString(),
+          $.unfudgeDateForProfileTimezone(range[1]).toISOString()
         ])
 
-      if data.per_slot_option
+      if data.per_slot_option is '1'
         if data.participants_per_appointment < 1
           $('[name="participants_per_appointment"]').errorBox(
             I18n.t('bad_per_slot', 'You must allow at least one appointment per time slot'))
@@ -220,7 +235,7 @@ define [
           contextCode = contextCodes[0]
           text = @contextsHash[contextCode].name
           if contextCodes.length > 1
-            text += I18n.t('and_n_contexts', ' and %{n} others', n: contextCodes.length - 1)
+            text += " " + I18n.t('and_n_contexts', 'and %{n} others', n: contextCodes.length - 1)
           @form.find('.ag_contexts_selector').text(text)
         if sectionCodes.length > 0
           sectionCode = sectionCodes[0]
@@ -231,7 +246,7 @@ define [
                      .value()
           text = section.name
           if sectionCodes.length > 1
-            text += I18n.t('and_n_sectionCodes', ' and %{n} others', n: sectionCodes.length - 1)
+            text += " " + I18n.t('and_n_sectionCodes', 'and %{n} others', n: sectionCodes.length - 1)
           @form.find('.ag_contexts_selector').text(text)
 
       # group selector
@@ -256,4 +271,6 @@ define [
       @form.find(".group_select").html(genericSelectTemplate(groupsInfo))
 
     toggleContextsMenu: (jsEvent) =>
-      $('.ag_contexts_menu').toggleClass('hidden')
+      $menu = $('.ag_contexts_menu').toggleClass('hidden')
+      # For accessibility: put the user back where they started.
+      $('.ag_contexts_selector').focus() if $menu.hasClass 'hidden'

@@ -31,7 +31,7 @@ class HostUrl
 
     def domain_config
       if !@@domain_config
-        @@domain_config = Setting.from_config("domain")
+        @@domain_config = ConfigFile.load("domain")
         @@domain_config ||= {}
       end
       @@domain_config
@@ -107,6 +107,7 @@ class HostUrl
     def file_host=(val)
       @@file_host = val
     end
+
     def default_host=(val)
       @@default_host = val
     end

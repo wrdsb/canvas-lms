@@ -4,8 +4,13 @@ define [
   'jquery'
   'Backbone'
   'compiled/fn/preventDefault'
+  'compiled/views/editor/KeyboardShortcuts'
   'tinymce.editor_box'
-], (_, I18n, $, Backbone, preventDefault) ->
+], (_, I18n, $, Backbone, preventDefault, KeyboardShortcuts) ->
+
+  ###
+  xsslint safeString.property content
+  ###
 
   ##
   # Toggles an element between a rich text editor and itself
@@ -17,7 +22,7 @@ define [
       doneText: I18n.t 'done_as_in_finished', 'Done'
       # whether or not a "Switch Views" link should be provided to edit the
       # raw html
-      switchViews: false
+      switchViews: true
 
     ##
     # @param {jQueryEl} @el - the element containing html to edit
@@ -47,10 +52,17 @@ define [
       @textArea.val @getContent()
       @textArea.insertBefore @el
       @el.detach()
-      @switchViews.insertBefore @textArea if @options.switchViews
+      if @options.switchViews
+        @switchViews.insertBefore @textArea
+        @switchViews.find('a').toggle() if !@switchViews.find('a').first().is(":visible")
+      @infoIcon ||= (new KeyboardShortcuts()).render().$el
+      @infoIcon.css("float", "right")
+      @infoIcon.insertAfter @switchViews
+      $('<div/>', style: "clear: both").insertBefore @textArea
       @done.insertAfter @textArea
+      opts = {focus: true, tinyOptions: {}}
       if @options.editorBoxLabel
-        opts = tinyOptions: {aria_label: @options.editorBoxLabel}
+        opts.tinyOptions.aria_label = @options.editorBoxLabel
       @textArea.editorBox opts
       @editing = true
       @trigger 'edit'
@@ -67,6 +79,7 @@ define [
       @textArea._removeEditor()
       @textArea.detach()
       @switchViews.detach() if @options.switchViews
+      @infoIcon.detach()
       @done.detach()
       # so tiny doesn't hang on to this instance
       @textArea.attr 'id', ''
@@ -101,20 +114,32 @@ define [
     # creates the "done" button used to exit the editor
     # @api private
     createDone: ->
-      $('<a/>')
-        .html(@options.doneText)
+      $('<div/>').addClass('edit_html_done_wrapper').append(
+        $('<a/>')
+        .text(@options.doneText)
         .attr('href', '#')
-        .addClass('btn edit-html-done edit_html_done')
+        .addClass('btn edit_html_done')
         .attr('title', I18n.t('done.title', 'Click to finish editing the rich text area'))
-        .click preventDefault => @display()
-
+        .click preventDefault =>
+          @display()
+          @editButton.focus()
+      )
     ##
-    # create the switch views link to go between rich text and a textarea
+    # create the switch views links to go between rich text and a textarea
     # @api private
     createSwitchViews: ->
-      $('<a/>', style: "float: right", href: "#")
-        .text(I18n.t('switch_views', 'Switch Views'))
-        .click preventDefault => @textArea.editorBox('toggle')
+      $switchToHtmlLink = $('<a/>', href: "#")
+      $switchToVisualLink = $switchToHtmlLink.clone()
+      $switchToHtmlLink.text(I18n.t('switch_editor_html', 'HTML Editor'))
+      $switchToVisualLink.hide().text(I18n.t('switch_editor_rich_text', 'Rich Content Editor'))
+      $switchViewsContainer = $('<div/>', style: "float: right")
+      $switchViewsContainer.append($switchToHtmlLink, $switchToVisualLink)
+      $switchViewsContainer.find('a').click preventDefault (e) =>
+        @textArea.editorBox('toggle')
+        # hide the clicked link, and show the other toggle link.
+        # todo: replace .andSelf with .addBack when JQuery is upgraded.
+        $(e.currentTarget).siblings('a').andSelf().toggle()
+      return $switchViewsContainer
 
 
   _.extend(EditorToggle.prototype, Backbone.Events)

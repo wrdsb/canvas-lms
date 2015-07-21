@@ -1,10 +1,16 @@
 # copied from: https://gist.github.com/1998897
 
 define [
-  'use!vendor/backbone'
+  'vendor/backbone'
   'underscore'
   'jquery'
-], (Backbone, _, $) ->
+  'compiled/behaviors/authenticity_token'
+  'str/htmlEscape'
+], (Backbone, _, $, authenticity_token, htmlEscape) ->
+  ###
+  xsslint safeString.identifier iframeId httpMethod
+  xsslint jqueryObject.identifier el
+  ###
 
   Backbone.syncWithoutMultipart = Backbone.sync
   Backbone.syncWithMultipart = (method, model, options) ->
@@ -27,14 +33,13 @@ define [
           attr
         else if !_.isEmpty(attr) and (_.isArray(attr) or typeof attr is 'object')
           toForm(attr, key, _.isArray(attr))
+        else if !"#{key}".match(/^_/) and attr? and attr instanceof Date
+          $("<input/>", { name: key, value: attr.toISOString() })[0]
         else if !"#{key}".match(/^_/) and attr? and typeof attr isnt 'object' and typeof attr isnt 'function'
-          $el = $ "<input/>",
-            name: key
-            value: attr
-          $el[0]
+          $("<input/>", { name: key, value: attr })[0]
       _.flatten(inputs)
     $form = $("""
-      <form enctype='multipart/form-data' target='#{iframeId}' action='#{options.url ? model.url()}' method='POST'>
+      <form enctype='multipart/form-data' target='#{iframeId}' action='#{htmlEscape options.url ? model.url()}' method='POST'>
       </form>
     """).hide()
 
@@ -42,7 +47,7 @@ define [
     if options.proxyAttachment
       $form.prepend """
         <input type='hidden' name='_method' value='#{httpMethod}' />
-        <input type='hidden' name='authenticity_token' value='#{ENV.AUTHENTICITY_TOKEN}' />
+        <input type='hidden' name='authenticity_token' value='#{htmlEscape authenticity_token()}' />
         """
 
     _.each toForm(model.toJSON()), (el) ->
@@ -56,7 +61,7 @@ define [
 
     callback = ->
       # contentDocument doesn't work in IE (7)
-      iframeBody = ($iframe[0].contentDocument || $iframe[0].contentWindow.document).body
+      iframeBody = ($iframe[0].contentDocument || $iframe[0].contentWindow?.document)?.body
       response = $.parseJSON($(iframeBody).text())
       # in case the form redirects after receiving the upload (API uploads),
       # prevent trying to work with an empty response

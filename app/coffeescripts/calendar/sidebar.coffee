@@ -1,6 +1,9 @@
 define [
   'jquery'
   'underscore'
+  'react'
+  'react-modal'
+  'jsx/calendar/ColorPicker'
   'compiled/userSettings'
   'jst/calendar/contextList'
   'jst/calendar/undatedEvents'
@@ -10,7 +13,8 @@ define [
   'compiled/jquery.kylemenu'
   'jquery.instructure_misc_helpers'
   'vendor/jquery.ba-tinypubsub'
-], ($, {map}, userSettings, contextListTemplate, undatedEventsTemplate, commonEventFactory, EditEventDetailsDialog, EventDataSource) ->
+], ($, _, React, ReactModal, ColorPickerComponent, userSettings, contextListTemplate, undatedEventsTemplate, commonEventFactory, EditEventDetailsDialog, EventDataSource) ->
+  ColorPicker = React.createFactory(ColorPickerComponent)
 
   class VisibleContextManager
     constructor: (contexts, selectedContexts, @$holder) ->
@@ -19,10 +23,14 @@ define [
              catch e
                {}
 
+      availableContexts = (c.asset_string for c in contexts)
       @contexts   = fragmentData.show.split(',') if fragmentData.show
       @contexts or= selectedContexts
       @contexts or= userSettings.get('checked_calendar_codes')
-      @contexts or= (c.asset_string for c in contexts[0...10])
+      @contexts or= availableContexts
+
+      @contexts = _.intersection(@contexts, availableContexts)
+      @contexts = @contexts.slice(0, 10)
 
       @notify()
 
@@ -47,7 +55,7 @@ define [
         @contexts.splice index, 1
       else
         @contexts.push context
-        @contexts.shift if @contexts.length > 10
+        @contexts.shift() if @contexts.length > 10
       @notify()
 
     notify: ->
@@ -63,13 +71,39 @@ define [
 
   return sidebar = (contexts, selectedContexts, dataSource) ->
 
-    $holder = $('#context-list-holder')
+    $holder   = $('#context-list-holder')
+    $skipLink = $('.skip-to-calendar')
+    $colorPickerBtn = $('.ContextList__MoreBtn')
 
     $holder.html contextListTemplate(contexts: contexts)
 
     visibleContexts = new VisibleContextManager(contexts, selectedContexts, $holder)
 
-    $holder.delegate '.context_list_context', 'click', (event) ->
-      visibleContexts.toggle $(this).data('context')
+    $holder.on 'click keyclick', '.context-list-toggle-box', (event) ->
+      parent = $(this).closest('.context_list_context')
+      visibleContexts.toggle $(parent).data('context')
       userSettings.set('checked_calendar_codes',
-        map($(this).parent().children('.checked'), (c) -> $(c).data('context')))
+        _.map($(parent).parent().children('.checked'), (c) -> $(c).data('context')))
+
+    $holder.on 'click keyclick', '.ContextList__MoreBtn', (event) ->
+      positions =
+        top: $(this).offset().top - $(window).scrollTop()
+        left: $(this).offset().left - $(window).scrollLeft()
+
+      assetString = $(this).closest('li').data('context')
+
+      React.render(ColorPicker({
+        isOpen: true
+        positions: positions
+        assetString: assetString
+        afterUpdateColor: (color) =>
+          color = '#' + color
+          $existingStyles = $('#calendar_color_style_overrides');
+          $newStyles = $('<style>')
+          $newStyles.text ".group_#{assetString}{ color: #{color}; border-color: #{color}; background-color: #{color};}"
+          $existingStyles.append($newStyles)
+      }), $('#color_picker_holder')[0]);
+
+    $skipLink.on 'click', (e) ->
+      e.preventDefault()
+      $('#content').attr('tabindex', -1).focus()

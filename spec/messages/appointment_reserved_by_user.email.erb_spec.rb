@@ -27,17 +27,17 @@ describe 'appointment_reserved_by_user.email' do
     generate_message(:appointment_reserved_by_user, :email, @event,
                      :data => {:updating_user => user})
 
-    @message.subject.should include('some title')
-    @message.body.should include('some title')
-    @message.body.should include(user.name)
-    @message.body.should include(@course.name)
-    @message.body.should include("/appointment_groups/#{@appointment_group.id}")
+    expect(@message.subject).to include('some title')
+    expect(@message.body).to include('some title')
+    expect(@message.body).to include(user.name)
+    expect(@message.body).to include(@course.name)
+    expect(@message.body).to include("/appointment_groups/#{@appointment_group.id}")
   end
 
   it "should render for groups" do
     user = user_model
     @course = course_model
-    cat = @course.group_categories.create
+    cat = group_category
     @group = cat.groups.create(:context => @course)
     @group.users << user
     appointment_participant_model(:participant => @group, :course => @course)
@@ -45,11 +45,11 @@ describe 'appointment_reserved_by_user.email' do
     generate_message(:appointment_reserved_by_user, :email, @event,
                      :data => {:updating_user => user})
 
-    @message.subject.should include('some title')
-    @message.body.should include('some title')
-    @message.body.should include(user.name)
-    @message.body.should include(@group.name)
-    @message.body.should include(@course.name)
-    @message.body.should include("/appointment_groups/#{@appointment_group.id}")
+    expect(@message.subject).to include('some title')
+    expect(@message.body).to include('some title')
+    expect(@message.body).to include(user.name)
+    expect(@message.body).to include(@group.name)
+    expect(@message.body).to include(@course.name)
+    expect(@message.body).to include("/appointment_groups/#{@appointment_group.id}")
   end
 end

@@ -1,14 +1,17 @@
 require [
   'jquery'
+  'underscore'
+  'react'
   'compiled/fn/preventDefault'
   'compiled/views/PublishButtonView'
   'compiled/views/PublishIconView'
+  'jsx/styleguide/ReactModalExample'
   'jqueryui/accordion'
   'jqueryui/tabs'
   'jqueryui/button'
   'jqueryui/tooltip'
   'jquery.instructure_date_and_time'
-], ($, preventDefault, PublishButtonView, PublishIconView) ->
+], ($, _, React, preventDefault, PublishButtonView, PublishIconView, ReactModalExample) ->
 
   do ->
     dialog = $('#dialog-buttons-dialog').dialog({
@@ -17,6 +20,22 @@ require [
     }).data('dialog')
     $('#show-dialog-buttons-dialog').click -> dialog.open()
 
+
+    # React Modal
+    React.renderComponent(
+      ReactModalExample
+        className: 'ReactModal__Content--canvas'
+        overlayClassName: 'ReactModal__Overlay--canvas'
+    , document.getElementById('react-modal-example')
+    );
+
+    React.renderComponent(
+      ReactModalExample
+        label: 'Trigger Confirm Dialog'
+        className: 'ReactModal__Content--canvas ReactModal__Content--mini-modal'
+        overlayClassName: 'ReactModal__Overlay--canvas'
+    , document.getElementById('react-modal-confirm-example')
+    )
 
   ## OLD STYLEGUIDE ##
 
@@ -28,10 +47,11 @@ require [
   $("#content").on iconEventsMap, ".demo-icons"
 
   # Accordion
-  $(".accordion").accordion header: "h3"
+  $("#styleguide_demo_accordion1, #styleguide_demo_accordion2").accordion header: "h3"
 
   # Tabs
-  $("#tabs").tabs()
+  $("#styleguide-tabs-demo-regular").tabs()
+  $("#styleguide-tabs-demo-minimal").tabs()
 
   # Datepicker
   # $("#datepicker").datepicker().children().show()
@@ -81,6 +101,9 @@ require [
       setTimeout deferred.resolve, 1000
       deferred
 
+    disabledMessage: ->
+      "Can't unpublish"
+
   # PublishButtonView doesn't require an element to initialize. It is
   # passed in here for the style-guide demonstration purposes
 
@@ -97,9 +120,16 @@ require [
   btnView = new PublishButtonView(model: model, el: "#published-disabled").render()
 
   # publish icon
-  model   = new Publishable(published: false,  publishable: true)
-  btnView = new PublishIconView(model: model, el: "#publish-icon").render()
+  _.each $('.publish-icon'), ($el) ->
+    model   = new Publishable(published: false,  publishable: true)
+    btnView = new PublishIconView(model: model, el: $el).render()
 
+
+  # Element Toggler
+  $('.element_toggler').click (e) ->
+    $(e.currentTarget).find('i')
+      .toggleClass('icon-mini-arrow-down')
+      .toggleClass('icon-mini-arrow-right')
 
 
   # Progressbar
@@ -119,5 +149,20 @@ require [
   $("#repeat").buttonset()
 
   $(".styleguide-datetime_field-example").datetime_field()
+  
+  #Global Navigation Hide/Show Subnav
+  selectCategory = (event) ->
+    event.preventDefault()
+    SgNavType = $(this).data('sg-category')
+    $(".Sg-header__Subnavigation section").addClass("isHidden")
+    $(".Sg-header__Subnavigation section." + SgNavType).removeClass("isHidden")
+    $(".Sg-header__Navigation a").removeClass('active')
+    $(this).addClass('active') 
+
+  $('.Sg-header__Navigation a').on('click', selectCategory);
+      
+
+
+    
 
 

@@ -1,9 +1,10 @@
 define [
-  'use!vendor/backbone'
+  'jquery'
+  'vendor/backbone'
   'underscore'
   'str/htmlEscape'
   'compiled/util/mixin'
-], (Backbone, _, htmlEscape, mixin) ->
+], ($, Backbone, _, htmlEscape, mixin) ->
 
   ##
   # Extends Backbone.View on top of itself to be 100X more useful
@@ -88,27 +89,26 @@ define [
     # @api public
 
     initialize: (options) ->
-      @options = _.extend {}, @defaults, @options, options
+      @options = _.extend {}, @defaults, options
       @setOptionProperties()
       @storeChildrenViews()
       @$el.data 'view', this
-      @model.view = this if @model
-      @collection.view = this if @collection
+      @_setViewProperties()
       # magic from mixin
       fn.call this for fn in @__initialize__ if @__initialize__
       @attach()
       this
 
-    # Store all children views for easy access. 
-    #   ie: 
+    # Store all children views for easy access.
+    #   ie:
     #      @view.children # {@view1, @view2}
     #
     # @api private
-    
-    storeChildrenViews: -> 
+
+    storeChildrenViews: ->
       return unless @constructor.__childViews__
       @children = _.map @constructor.__childViews__, (viewObj) => @[viewObj.name]
-    
+
     ##
     # Sets the option properties
     #
@@ -220,6 +220,7 @@ define [
       else
         @options
       json.cid = @cid
+      json.ENV = window.ENV if window.ENV?
       json
 
     ##
@@ -248,6 +249,10 @@ define [
     #   <div data-bind="foo">{I will always mirror @model.get('foo') in here}</div>
     #
     # @api private
+
+    ###
+    xsslint safeString.method format
+    ###
 
     createBindings: (index, el) =>
       @$('[data-bind]').each (index, el) =>
@@ -296,7 +301,6 @@ define [
     ##
     # DEPRECATED - don't use views option, use `child` constructor method
     renderViews: ->
-      console?.warn? 'the `views` option is deprecated in favor of @child`'
       _.each @options.views, @renderView
 
     ##
@@ -311,6 +315,21 @@ define [
     hide: -> @$el.hide()
     show: -> @$el.show()
     toggle: -> @$el.toggle()
+
+    # Set view property for attached model/collection objects. If
+    # @setViewProperties is set to false, view properties will
+    # not be set.
+    #
+    # Example:
+    #   class SampleView extends Backbone.View
+    #     setViewProperties: false
+    #
+    # @api private
+    _setViewProperties: ->
+      return if @setViewProperties == false
+      @model.view = this if @model
+      @collection.view = this if @collection
+      return
 
   Backbone.View
 

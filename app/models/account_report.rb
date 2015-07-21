@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 - 2013 Instructure, Inc.
+# Copyright (C) 2011 - 2014 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -23,6 +23,8 @@ class AccountReport < ActiveRecord::Base
   belongs_to :user
   belongs_to :attachment
 
+  validates_presence_of :account_id, :user_id, :workflow_state
+
   serialize :parameters
 
   workflow do
@@ -33,12 +35,8 @@ class AccountReport < ActiveRecord::Base
     state :deleted
   end
 
-  scope :last_complete_of_type, lambda{ |type|
-    last_of_type(type).where(:workflow_state => 'complete')  }
-
-  scope :last_of_type, lambda {|type|
-    where(:report_type => type).order("updated_at DESC").limit(1)
-  }
+  scope :last_complete_of_type, lambda { |type, limit = 1| last_of_type(type, limit).where(:progress => '100') }
+  scope :last_of_type, lambda { |type, limit = 1| where(:report_type => type).order("updated_at DESC").limit(limit) }
 
   def context
     self.account
@@ -54,9 +52,9 @@ class AccountReport < ActiveRecord::Base
 
   def run_report(type=nil)
     self.report_type ||= type
-    if AccountReport.available_reports(self.account)[self.report_type]
+    if AccountReport.available_reports[self.report_type]
       begin
-        Canvas::AccountReports.generate_report(self)
+        AccountReports.generate_report(self)
       rescue
         self.workflow_state = :error
         self.save
@@ -66,15 +64,15 @@ class AccountReport < ActiveRecord::Base
       self.save
     end
   end
-  handle_asynchronously :run_report
+  handle_asynchronously :run_report, :priority => Delayed::LOW_PRIORITY, :max_attempts => 1
 
   def has_parameter?(key)
     self.parameters.is_a?(Hash) && self.parameters[key].presence
   end
 
-  def self.available_reports(account)
+  def self.available_reports
     # check if there is a reports plugin for this account
-    Canvas::AccountReports.for_account(account.root_account.id)
+    AccountReports.available_reports
   end
 
 end

@@ -2,10 +2,10 @@
 require [
   'compiled/models/Section'
   'compiled/models/Assignment'
+  'compiled/views/assignments/EditHeaderView'
   'compiled/views/assignments/EditView'
   'compiled/collections/SectionCollection'
   'compiled/models/DueDateList'
-  'compiled/views/assignments/DueDateList'
   'compiled/views/assignments/DueDateOverride'
   'compiled/views/assignments/AssignmentGroupSelector'
   'compiled/views/assignments/GradingTypeSelector'
@@ -13,9 +13,9 @@ require [
   'compiled/views/assignments/PeerReviewsSelector'
   'grading_standards'
   'manage_groups'
-], (Section,Assignment, EditView, SectionCollection, DueDateList, DueDateListView,
-OverrideView, AssignmentGroupSelector, GradingTypeSelector,
-GroupCategorySelector, PeerReviewsSelector) ->
+], (Section,Assignment, EditHeaderView, EditView, SectionCollection,
+  DueDateList, OverrideView, AssignmentGroupSelector,
+  GradingTypeSelector, GroupCategorySelector, PeerReviewsSelector) ->
 
   ENV.ASSIGNMENT.assignment_overrides = ENV.ASSIGNMENT_OVERRIDES
 
@@ -23,8 +23,6 @@ GroupCategorySelector, PeerReviewsSelector) ->
   assignment.urlRoot = ENV.URL_ROOT
 
   sectionList = new SectionCollection ENV.SECTION_LIST
-  if !sectionList.length
-    sectionList.add Section.defaultDueDateSection()
   dueDateList = new DueDateList assignment.get('assignment_overrides'), sectionList, assignment
 
   assignmentGroupSelector = new AssignmentGroupSelector
@@ -38,6 +36,10 @@ GroupCategorySelector, PeerReviewsSelector) ->
   peerReviewsSelector = new PeerReviewsSelector
     parentModel: assignment
 
+  editHeaderView = new EditHeaderView
+    el: '#edit_assignment_header'
+    model: assignment
+
   editView = new EditView
     el: '#edit_assignment_form'
     model: assignment
@@ -48,7 +50,7 @@ GroupCategorySelector, PeerReviewsSelector) ->
     views:
       'js-assignment-overrides': new OverrideView
         model: dueDateList
-        views:
-          'due-date-overrides': new DueDateListView(model: dueDateList)
-      
+        views: {}
+
+  editHeaderView.render()
   editView.render()

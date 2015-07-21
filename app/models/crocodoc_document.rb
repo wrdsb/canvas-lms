@@ -16,6 +16,8 @@
 # along with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
+require 'crocodoc'
+
 class CrocodocDocument < ActiveRecord::Base
   attr_accessible :uuid, :process_state, :attachment_id
 
@@ -41,8 +43,10 @@ class CrocodocDocument < ActiveRecord::Base
       crocodoc_api.upload(url)
     }
 
-    if response['uuid']
+    if response && response['uuid']
       update_attributes :uuid => response['uuid'], :process_state => 'QUEUED'
+    elsif response.nil?
+      raise "no response received (request timed out?)"
     else
       raise response.inspect
     end
@@ -70,7 +74,7 @@ class CrocodocDocument < ActiveRecord::Base
       opts[:editable] = false
     end
 
-    Canvas.timeout_protection("crocodoc") do
+    Canvas.timeout_protection("crocodoc", raise_on_timeout: true) do
       response = crocodoc_api.session(uuid, opts)
       session = response['session']
       crocodoc_api.view(session)
@@ -93,7 +97,7 @@ class CrocodocDocument < ActiveRecord::Base
 
     submissions = attachment.attachment_associations.
       where(:context_type => 'Submission').
-      includes(:context).
+      preload(context: [:assignment]).
       map(&:context)
 
     return opts unless submissions
@@ -104,6 +108,11 @@ class CrocodocDocument < ActiveRecord::Base
       if submissions.any? { |s| s.grants_right? user, :grade }
         opts[:admin] = true
       end
+    end
+
+    if submissions.map(&:assignment).any?(&:anonymous_peer_reviews?)
+      opts[:editable] = false
+      opts[:filter] = 'none'
     end
 
     opts
@@ -125,32 +134,43 @@ class CrocodocDocument < ActiveRecord::Base
 
   def self.update_process_states
     bs = Setting.get('crocodoc_status_check_batch_size', '45').to_i
-    CrocodocDocument.where(:process_state => %w(QUEUED PROCESSING)).find_in_batches do |docs|
-      statuses = []
-      docs.each_slice(bs) do |sub_docs|
-        statuses.concat CrocodocDocument.crocodoc_api.status(sub_docs.map(&:uuid))
-      end
+    Shackles.activate(:slave) do
+      CrocodocDocument.where(:process_state => %w(QUEUED PROCESSING)).find_in_batches do |docs|
+        Shackles.activate(:master) do
+          statuses = []
+          docs.each_slice(bs) do |sub_docs|
+            statuses.concat CrocodocDocument.crocodoc_api.status(sub_docs.map(&:uuid))
+          end
 
-      statuses.each do |status|
-        uuid, state = status['uuid'], status['status']
-        CrocodocDocument.
-            where(:uuid => status['uuid']).
-            update_all(:process_state => status['status'])
-        if status['status'] == 'ERROR'
-          error = status['error'] || 'No explanation given'
-          ErrorReport.log_error 'crocodoc', :message => error
+          bulk_updates = {}
+          error_uuids = []
+          statuses.each do |status|
+            uuid, state = status['uuid'], status['status']
+            bulk_updates[status['status']] ||= []
+            bulk_updates[status['status']] << status['uuid']
+            if status['status'] == 'ERROR'
+              error = status['error'] || 'No explanation given'
+              error_uuids << status['uuid']
+              Canvas::Errors.capture 'crocodoc', message: error
+            end
+          end
+
+          bulk_updates.each do |status, uuids|
+            CrocodocDocument.
+                where(:uuid => uuids).
+                update_all(:process_state => status)
+          end
+
+          if error_uuids.present?
+            error_docs = CrocodocDocument.where(:uuid => error_uuids)
+            attachment_ids = error_docs.pluck(:attachment_id)
+            if Canvadocs.enabled?
+              Attachment.send_later_enqueue_args :submit_to_canvadocs,
+                {:n_strand => "canvadocs", :max_attempts => 1},
+                attachment_ids
+            end
+          end
         end
-      end
-
-      error_uuids = statuses.select { |s|
-        s['status'] == 'ERROR'
-      }.map { |s| s['uuid'] }
-      if error_uuids.present?
-        error_docs = CrocodocDocument.where(:uuid => error_uuids)
-        attachment_ids = error_docs.map(&:attachment_id)
-        Attachment.send_later_enqueue_args :submit_to_scribd,
-          {:n_strand => 'scribd', :max_attempts => 1},
-          attachment_ids
       end
     end
   end

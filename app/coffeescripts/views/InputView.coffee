@@ -25,8 +25,8 @@ define [
       @setupElement()
 
     setupElement: ->
-      @lastValue = @el.value
-      @modelAttribute = @$el.attr('name') or @options.modelAttribute
+      @lastValue = @el?.value
+      @modelAttribute = @$el.attr('name') or @options?.modelAttribute
 
     attach: ->
       return unless @collection
@@ -38,7 +38,7 @@ define [
       {value} = @el
       # TODO this needs to be refactored out into some validation
       # rules or something
-      if value and value.length < @options.minLength
+      if value and value.length < @options.minLength and !(@options.allowSmallerNumbers && value > 0)
         return unless @options.setParamOnInvalid
         value = false
       @setParam value

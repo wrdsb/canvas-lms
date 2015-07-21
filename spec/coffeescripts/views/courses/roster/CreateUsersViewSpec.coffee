@@ -1,10 +1,11 @@
 define [
+  'jquery'
   'compiled/views/courses/roster/CreateUsersView'
   'compiled/collections/RolesCollection'
   'compiled/models/Role'
   'compiled/models/CreateUserList'
   'helpers/assertions'
-], (CreateUsersView, RolesCollection, Role, CreateUserList, assert) ->
+], ($, CreateUsersView, RolesCollection, Role, CreateUserList, assert) ->
 
   view = null
   server = null
@@ -26,7 +27,11 @@ define [
             section: 'MWF'
           }
         ])])
-      roles =  [{label: 'Teacher', name: 'TeacherEnrollment', manageable_by_user: true}, {label: 'Student', name: 'StudentEnrollment', manageable_by_user: true}, {label: 'Fake', name: 'Fake', manageable_by_user: false}]
+      roles = [
+        {label: 'Teacher', name: 'TeacherEnrollment', manageable_by_user: true},
+        {label: 'Student', name: 'StudentEnrollment', manageable_by_user: true},
+        {label: 'Fake', name: 'Fake', manageable_by_user: false}
+      ]
       view = new CreateUsersView
         trigger: false
         title: 'test'
@@ -110,4 +115,14 @@ define [
     view.close()
     view.open()
     assertTextareaValue ''
+
+  # This test should work, it passes locally, but it doesn't work on
+  # Jenkins.  Commenting it out for now, and using Selenium for now.
+  #
+  # test 'sets focus to the Done button on step 3', ->
+  #   addUserText()
+  #   goToStep2()
+  #   goToStep3()
+  #   assertStepVisible 3
+  #   ok document.activeElement == $('button.dialog_closer')[0], 'Done button has focus'
 

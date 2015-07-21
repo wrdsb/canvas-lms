@@ -18,23 +18,27 @@
 
 define [
   'i18n!collaborations'
+  'jquery'
   'Backbone'
   'compiled/views/collaborations/ListView'
   'compiled/views/collaborations/MemberListView'
   'jst/collaborations/CollaboratorPicker'
-], (I18n, {View}, ListView, MemberListView, widgetTemplate) ->
+], (I18n, $, {View}, ListView, MemberListView, widgetTemplate) ->
 
   class CollaboratorPickerView extends View
     template: widgetTemplate
 
     events:
       'change .filters input': 'filterList'
+      'focus .filters input': 'focusRadioGroup'
+      'blur .filters input': 'blurRadioGroup'
 
     fetchOptions:
       data:
         per_page: 50
 
     initialize: ->
+      super
       @cacheElements()
       @createLists()
       @attachEvents()
@@ -63,8 +67,9 @@ define [
     #
     # Returns nothing.
     createLists: ->
+      currentUser = ENV.current_user_id && String(ENV.current_user_id)
       @userList   = new ListView
-        currentUser: ENV.current_user_id
+        currentUser: currentUser
         el: @$userList
         fetchOptions: @fetchOptions
         type: 'user'
@@ -73,7 +78,7 @@ define [
         fetchOptions: @fetchOptions
         type: 'group'
       @memberList = new MemberListView
-        currentUser: ENV.current_user_id
+        currentUser: currentUser
         el: @$memberList
 
     # Internal: Trigger initial fetch actions on each collection.
@@ -101,6 +106,12 @@ define [
       el = $(e.currentTarget).val()
       @$el.find('.available-lists ul').hide()
       @$el.find(".#{el}").show()
+
+    focusRadioGroup: (e) ->
+      $(e.currentTarget).parent().addClass("radio-group-outline")
+
+    blurRadioGroup: (e) ->
+      $(e.currentTarget).parent().removeClass("radio-group-outline")
 
     # Internal: Remove a collaborator and return them to their original list.
     #

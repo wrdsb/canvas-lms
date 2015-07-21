@@ -27,7 +27,7 @@ define [
     clock.tick view.options.onInputDelay
 
   test 'fires input event, sends value', ->
-    spy = sinon.spy()
+    spy = @spy()
     view.on 'input', spy
     setValue 'foo'
     simulateKeyup()
@@ -35,7 +35,7 @@ define [
     ok spy.calledWith 'foo'
 
   test 'does not fire input event if value has not changed', ->
-    spy = sinon.spy()
+    spy = @spy()
     view.on 'input', spy
     setValue 'foo'
     simulateKeyup()
@@ -91,4 +91,13 @@ define [
     simulateKeyup()
     equal view.model.get('filter'), false, 'filter attribute is false'
 
-
+  test 'updates filter with small number', ->
+    view.model = new Backbone.Model filter: 'foo'
+    view.options.allowSmallerNumbers = false
+    setValue '1'
+    simulateKeyup()
+    equal view.model.get('filter'), 'foo', 'filter attribute did not change'
+    view.options.allowSmallerNumbers = true
+    setValue '2'
+    simulateKeyup()
+    equal view.model.get('filter'), '2', 'filter attribute did change'

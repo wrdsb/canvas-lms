@@ -1,8 +1,12 @@
+require 'nokogiri'
+require 'ritex'
+require 'securerandom'
+
 module UserContent
   def self.escape(str, current_host = nil)
     html = Nokogiri::HTML::DocumentFragment.parse(str)
     find_user_content(html) do |obj, uc|
-      uuid = UUIDSingleton.instance.generate
+      uuid = SecureRandom.uuid
       child = Nokogiri::XML::Node.new("iframe", html)
       child['class'] = 'user_content_iframe'
       child['name'] = uuid
@@ -32,12 +36,20 @@ module UserContent
       child.add_next_sibling(form)
     end
 
-    html.css('img.equation_image').each do |node|
-      mathml = Nokogiri::HTML::DocumentFragment.parse('<span class="hidden-readable">' + Ritex::Parser.new.parse(node.delete('alt').value) + '</span>') rescue next
-      node.add_next_sibling(mathml)
+    find_equation_images(html) do |node|
+      mathml = latex_to_mathml(node.delete('alt').value)
+      next if mathml.blank?
+      mathml_span = Nokogiri::HTML::DocumentFragment.parse("<span class=\"hidden-readable\">#{mathml}</span>")
+      node.add_next_sibling(mathml_span)
     end
 
     html.to_s.html_safe
+  end
+
+  def self.latex_to_mathml(latex)
+    Ritex::Parser.new.parse(latex)
+  rescue Ritex::LexError, Ritex::Error
+    return ""
   end
 
   class Node < Struct.new(:width, :height, :node_string, :node_hmac)
@@ -72,13 +84,19 @@ module UserContent
     end
   end
 
+  def self.find_equation_images(html)
+    html.css('img.equation_image').each do |node|
+      yield node
+    end
+  end
+
   # TODO: try and discover the motivation behind the "huhs"
   def self.css_size(val)
     if !val || val.to_f == 0
       # no value, non-numeric value, or 0 value (whether "0", "0px", "0%",
       # etc.); ignore
       nil
-    elsif val == "#{val.to_f.to_s}%" || val == "#{val.to_f.to_s}px"
+    elsif val == "#{val.to_f}%" || val == "#{val.to_f}px"
       # numeric percentage or specific px value; use as is
       val
     elsif val.to_f.to_s == val
@@ -93,22 +111,23 @@ module UserContent
 
   class HtmlRewriter
     AssetTypes = {
-      'assignments' => Assignment,
-      'announcements' => Announcement,
-      'calendar_events' => CalendarEvent,
-      'discussion_topics' => DiscussionTopic,
-      'collaborations' => Collaboration,
-      'files' => Attachment,
-      'conferences' => WebConference,
-      'quizzes' => Quiz,
-      'groups' => Group,
-      'wiki' => WikiPage,
+      'assignments' => :Assignment,
+      'announcements' => :Announcement,
+      'calendar_events' => :CalendarEvent,
+      'discussion_topics' => :DiscussionTopic,
+      'collaborations' => :Collaboration,
+      'files' => :Attachment,
+      'conferences' => :WebConference,
+      'quizzes' => :"Quizzes::Quiz",
+      'groups' => :Group,
+      'wiki' => :WikiPage,
+      'pages' => :WikiPage,
       'grades' => nil,
       'users' => nil,
       'external_tools' => nil,
       'file_contents' => nil,
-      'modules' => ContextModule,
-      'items' => ContentTag
+      'modules' => :ContextModule,
+      'items' => :ContentTag
     }
     DefaultAllowedTypes = AssetTypes.keys
 
@@ -154,7 +173,7 @@ module UserContent
 
       html.gsub(@toplevel_regex) do |relative_url|
         type, obj_id, rest = [$1, $2, $3]
-        if type != "wiki"
+        if type != "wiki" && type != "pages"
           if obj_id.to_i > 0
             obj_id = obj_id.to_i
           else
@@ -169,7 +188,9 @@ module UserContent
         end
 
         if asset_types.key?(type)
-          match = UriMatch.new(relative_url, type, asset_types[type], obj_id, rest)
+          klass = asset_types[type]
+          klass = klass.to_s.constantize if klass
+          match = UriMatch.new(relative_url, type, klass, obj_id, rest)
           handler = @handlers[type] || @default_handler
           (handler && handler.call(match)) || relative_url
         else
@@ -181,6 +202,7 @@ module UserContent
 
     # if content is nil, it'll query the block for the content if needed (lazy content load)
     def user_can_view_content?(content = nil, &get_content)
+      return false if user.blank? && content.respond_to?(:locked?) && content.locked?
       return true unless user
       # if user given, check that the user is allowed to manage all
       # context content, or read that specific item (and it's not locked)

@@ -1,32 +1,29 @@
 require([
   'i18n!accounts' /* I18n.t */,
   'jquery' /* $ */,
+  'compiled/util/addPrivacyLinkToDialog',
+  'underscore',
   'user_sortable_name',
   'jquery.instructure_forms' /* formSubmit */,
   'jqueryui/dialog',
   'compiled/jquery/fixDialogButtons' /* fix dialog formatting */,
   'compiled/jquery.rails_flash_notifications'
-], function(I18n, $) {
+], function(I18n, $, addPrivacyLinkToDialog, _) {
 
   $(".add_user_link").click(function(event) {
     event.preventDefault();
     $("#add_user_form :text").val("");
-    var $dialog = $("#add_user_dialog"),
-        $privacy = $('<a>', {href: "http://www.instructure.com/privacy-policy", style: "padding-left: 1em; line-height: 3em", 'class': 'privacy_policy_link', target: "_blank"}),
-        $buttonPane;
+    var $dialog = $("#add_user_dialog");
     $dialog.dialog({
       title: I18n.t('add_user_dialog_title', "Add a New User"),
       width: 500
     }).fixDialogButtons();
-    $buttonPane = $dialog.closest('.ui-dialog').find('.ui-dialog-buttonpane');
-    if (!$buttonPane.find('.privacy_policy_link').length) {
-      $privacy.text(I18n.t('#site.view_privacy_policy', 'View Privacy Policy'));
-      $dialog.closest('.ui-dialog').find('.ui-dialog-buttonpane').append($privacy);
-    }
+    addPrivacyLinkToDialog($dialog);
     $("#add_user_form :text:visible:first").focus().select();
   });
   $("#add_user_form").formSubmit({
-    required: ['user[name]'],
+    formErrors: false,
+    required: ['user[name]', 'pseudonym[unique_id]'],
     beforeSubmit: function(data) {
       $(this).find("button").attr('disabled', true)
         .filter(".submit_button").text(I18n.t('adding_user_message', "Adding User..."));
@@ -46,6 +43,38 @@ require([
       $("#add_user_dialog").dialog('close');
     },
     error: function(data) {
+      errorData = {};
+
+      // Email errors
+      if(data.pseudonym.unique_id){
+        errorList = [];
+
+        var messages = {
+          too_long: I18n.t("Login is too long"),
+          invalid: I18n.t("Login is invalid: must be alphanumeric or an email address")
+        };
+        var errors = _.uniq(_.map(data.pseudonym.unique_id, function(i){ return i.message; }));
+        _.each(errors, function(i){
+          errorList.push(messages[i] ? messages[i] : i);
+        });
+
+        errorData['unique_id'] = errorList.join(', ');
+      }
+
+      // SIS ID taken error
+      if (data.pseudonym.sis_user_id) {
+        errorList = [];
+
+        var errors = _.uniq(_.map(data.pseudonym.sis_user_id, function(i){ return i.message; }));
+        _.each(errors, function(i){
+          errorList.push(i);
+        });
+
+        errorData['sis_user_id'] = errorList.join(', ');
+      }
+
+      $(this).formErrors(errorData);
+
       $(this).find("button").attr('disabled', false)
         .filter(".submit_button").text(I18n.t('user_add_failed_message', "Adding User Failed, please try again"));
     }

@@ -19,13 +19,18 @@
 define [
   'jquery'
   'underscore'
+  'timezone'
+  'vendor/timezone/America/Denver'
+  'vendor/timezone/America/New_York'
   'compiled/behaviors/SyllabusBehaviors'
   'compiled/collections/SyllabusCollection'
   'compiled/collections/SyllabusCalendarEventsCollection'
   'compiled/collections/SyllabusAppointmentGroupsCollection'
   'compiled/views/courses/SyllabusView'
-  'spec/javascripts/views/SyllabusViewPrerendered'
-], ($, _, SyllabusBehaviors, SyllabusCollection, SyllabusCalendarEventsCollection, SyllabusAppointmentGroupsCollection, SyllabusView, SyllabusViewPrerendered) ->
+  'spec/javascripts/compiled/views/SyllabusViewPrerendered'
+  'helpers/fakeENV'
+  'helpers/jquery.simulate'
+], ($, _, tz, denver, newYork, SyllabusBehaviors, SyllabusCollection, SyllabusCalendarEventsCollection, SyllabusAppointmentGroupsCollection, SyllabusView, SyllabusViewPrerendered, fakeENV) ->
 
   setupServerResponses = ->
     server = sinon.fakeServer.create()
@@ -72,11 +77,13 @@ define [
 
   module 'Syllabus',
     setup: ->
+      fakeENV.setup(TIMEZONE: 'America/Denver', CONTEXT_TIMEZONE: 'America/New_York')
       # Setup stubs/mocks
       @server = setupServerResponses()
 
-      @getUserOffset = sinon.stub $, 'getUserOffset', ->
-        return -7 * 60
+      @tzSnapshot = tz.snapshot()
+      tz.changeZone(denver, 'America/Denver')
+      tz.preload("America/New_York", newYork)
 
       @clock = sinon.useFakeTimers(new Date(2012, 0, 23, 15, 30).getTime())
 
@@ -127,12 +134,14 @@ define [
         collection: acollection
 
     teardown: ->
+      fakeENV.teardown()
       @syllabusContainer.remove()
       @miniMonth.remove()
       @jumpToToday.remove()
       @clock.restore()
-      @getUserOffset.restore()
+      tz.restore(@tzSnapshot)
       @server.restore()
+      document.getElementById("fixtures").innerHTML = ""
 
     render: ->
       @view.render()
@@ -141,7 +150,7 @@ define [
       SyllabusBehaviors.bindToSyllabus()
 
     renderAssertions: ->
-      expect 15
+      expect 19
 
       # rendering
       syllabus = $('#syllabus')
@@ -187,6 +196,15 @@ define [
       equal expected.length, 2, 'passed events - passed events found'
       deepEqual actual.toArray(), expected.toArray(), 'passed events - events before today marked as passed'
 
+      # context-sensitive datetime titles
+      assignment_ts = $('.events_2012_01_01 .related-assignment_1 .dates > span:nth-child(1)')
+      equal assignment_ts.text(), "10am", "assignment - local time in table"
+      equal assignment_ts.data('html-tooltip-title'), "Local: Jan 1 at 10:00am<br>Course: Jan 1 at 12:00pm", 'assignment - correct local and course times given'
+
+      event_ts = $('.events_2012_01_01 .related-appointment_group_1 .dates > span:nth-child(1)')
+      equal event_ts.text(), " 8am", "event - local time in table"
+      equal event_ts.data('html-tooltip-title'), "Local: Jan 1 at 8:00am<br>Course: Jan 1 at 10:00am", 'event - correct local and course times given'
+
   test 'render (user public course)', ->
     @view.can_read = true # public course -- can read
     @view.is_valid_user = true # user - enrolled (can read)
@@ -197,21 +215,21 @@ define [
   test 'render (anonymous public course)', ->
     @view.can_read = true # public course -- can read
     @view.is_valid_user = false # anonymous
-    
+
     @render()
     @renderAssertions()
 
   test 'render (user public syllabus)', ->
     @view.can_read = false # public syllabus -- cannot read
     @view.is_valid_user = true # user - non-enrolled (cannot read)
-    
+
     @render()
     @renderAssertions()
 
   test 'render (anonymous public syllabus)', ->
     @view.can_read = false # public syllabus -- cannot read
     @view.is_valid_user = false # anonymous
-    
+
     @render()
     @renderAssertions()
 
@@ -418,11 +436,11 @@ define [
     deepEqual actual.toArray(), expected.toArray(), 'jump to today - expected dates with events highlighted'
 
     expected = $('#mini_day_2012_01_23')
-    actual = $('.mini_calendar_day.related')
+    actual = $('.mini_calendar_day.selected')
     equal expected.length, 1, 'jump to today - today found'
     deepEqual actual.toArray(), expected.toArray(), 'jump to today - today highlighted'
 
     expected = $('.events_2012_01_23')
-    actual = $('tr.date.related')
+    actual = $('tr.date.selected')
     equal expected.length, 1, 'jump to today - today\'s events found'
     deepEqual actual.toArray(), expected.toArray(), 'jump to today - today\'s events highlighted'

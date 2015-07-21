@@ -24,29 +24,31 @@ class QuestionBanksController < ApplicationController
 
   def index
     if @context == @current_user || authorized_action(@context, @current_user, :manage_assignments)
-      @question_banks = @context.assessment_question_banks.active.all
+      @question_banks = @context.assessment_question_banks.active.except(:includes).all
       if params[:include_bookmarked] == '1'
         @question_banks += @current_user.assessment_question_banks.active
       end
-      if params[:inherited] == '1' && @context != @current_user && @context.grants_right?(@current_user, nil, :read_question_banks) 
+      if params[:inherited] == '1' && @context != @current_user && @context.grants_right?(@current_user, :read_question_banks)
         @question_banks += @context.inherited_assessment_question_banks.active
       end
-      @question_banks = @question_banks.select{|b| b.grants_right?(@current_user, nil, :manage) } if params[:managed] == '1'
-      @question_banks = @question_banks.uniq.sort_by{|b| b.title || "zzz" }
+      @question_banks = @question_banks.select{|b| b.grants_right?(@current_user, :manage) } if params[:managed] == '1'
+      @question_banks = Canvas::ICU.collate_by(@question_banks.uniq) { |b| b.title || CanvasSort::Last }
       respond_to do |format|
         format.html
-        format.json { render :json => @question_banks.to_json(:methods => [:cached_context_short_name, :assessment_question_count]) }
+        format.json { render :json => @question_banks.map{ |b| b.as_json(methods: [:cached_context_short_name, :assessment_question_count]) }}
       end
     end
   end
-  
+
   def questions
     find_bank(params[:question_bank_id], params[:inherited] == '1') do
-      @questions = @bank.assessment_questions.active.paginate(:per_page => 50, :page => params[:page])
-      render :json => {:pages => @questions.total_pages, :questions => @questions}.to_json
+      @questions = @bank.assessment_questions.active
+      url = polymorphic_url([@context, :question_bank_questions])
+      @questions = Api.paginate(@questions, self, url, default_per_page: 50)
+      render :json => {:pages => @questions.total_pages, :questions => @questions}
     end
   end
-  
+
   def reorder
     @bank = @context.assessment_question_banks.find(params[:question_bank_id])
     if authorized_action(@bank, @current_user, :update)
@@ -61,11 +63,11 @@ class QuestionBanksController < ApplicationController
 
     add_crumb(@bank.title)
     if authorized_action(@bank, @current_user, :read)
-      @alignments = @bank.learning_outcome_alignments.sort_by{|a| a.learning_outcome.short_description.downcase }
+      @alignments = Canvas::ICU.collate_by(@bank.learning_outcome_alignments) { |a| a.learning_outcome.short_description }
       @questions = @bank.assessment_questions.active.paginate(:per_page => 50, :page => 1)
     end
   end
-  
+
   def move_questions
     @bank = @context.assessment_question_banks.find(params[:question_bank_id])
     @new_bank = AssessmentQuestionBank.find(params[:assessment_question_bank_id])
@@ -86,55 +88,58 @@ class QuestionBanksController < ApplicationController
       else
         @questions.update_all(:assessment_question_bank_id => @new_bank)
       end
+
+      [ @bank, @new_bank ].each(&:touch)
+
       render :json => {}
     end
   end
-  
+
   def create
-    if authorized_action(@context.assessment_question_banks.new, @current_user, :create)
+    if authorized_action(@context.assessment_question_banks.scoped.new, @current_user, :create)
       @bank = @context.assessment_question_banks.build(params[:assessment_question_bank])
       respond_to do |format|
         if @bank.save
           @bank.bookmark_for(@current_user)
           flash[:notice] = t :bank_success, "Question bank successfully created!"
           format.html { redirect_to named_context_url(@context, :context_question_banks_url) }
-          format.json { render :json => @bank.to_json }
+          format.json { render :json => @bank }
         else
           flash[:error] = t :bank_fail, "Question bank failed to create."
           format.html { redirect_to named_context_url(@context, :context_question_banks_url) }
-          format.json { render :json => @bank.errors.to_json, :status => :bad_request }
+          format.json { render :json => @bank.errors, :status => :bad_request }
         end
       end
     end
   end
-  
+
   def bookmark
     @bank = AssessmentQuestionBank.find(params[:question_bank_id])
 
     if params[:unbookmark] == "1"
-      render :json => @bank.bookmark_for(@current_user, false).to_json
+      render :json => @bank.bookmark_for(@current_user, false)
     elsif authorized_action(@bank, @current_user, :update)
-      render :json => @bank.bookmark_for(@current_user).to_json
+      render :json => @bank.bookmark_for(@current_user)
     end
   end
-  
+
   def update
     @bank = @context.assessment_question_banks.find(params[:id])
     if authorized_action(@bank, @current_user, :update)
       if @bank.update_attributes(params[:assessment_question_bank])
         @bank.reload
-        render :json => @bank.to_json(:include => {:learning_outcome_alignments => {:include => :learning_outcome}})
+        render :json => @bank.as_json(:include => {:learning_outcome_alignments => {:include => {:learning_outcome => {:include_root => false}}}})
       else
-        render :json => @bank.errors.to_json, :status => :bad_request
+        render :json => @bank.errors, :status => :bad_request
       end
     end
   end
-  
+
   def destroy
     @bank = @context.assessment_question_banks.find(params[:id])
     if authorized_action(@bank, @current_user, :delete)
       @bank.destroy
-      render :json => @bank.to_json
+      render :json => @bank
     end
   end
 end

@@ -1,7 +1,8 @@
 require File.expand_path(File.dirname(__FILE__) + '/helpers/quizzes_common')
 
 describe "quizzes students" do
-  it_should_behave_like "quizzes selenium tests"
+
+  include_examples "quizzes selenium tests"
 
   context "as a teacher " do
 
@@ -16,9 +17,7 @@ describe "quizzes students" do
       quiz.generate_quiz_data
       quiz.workflow_state = 'available'
       quiz.save
-
       @fake_student = @course.student_view_student
-
       enter_student_view
       get "/courses/#{@course.id}/quizzes/#{quiz.id}"
 
@@ -26,13 +25,17 @@ describe "quizzes students" do
       wait_for_ajaximations
 
       q = quiz.stored_questions[0]
-      f("#question_#{q[:id]}_answer_#{q[:answers][0][:id]}").click
 
-      f("#submit_quiz_button").click
-      wait_for_ajaximations
-      quiz_sub = @fake_student.reload.submissions.find_by_assignment_id(quiz.assignment.id)
-      quiz_sub.should be_present
-      quiz_sub.workflow_state.should == "graded"
+      fj("input[type=radio][value=#{q[:answers][0][:id]}]").click
+      expect(fj("input[type=radio][value=#{q[:answers][0][:id]}]").selected?).to be_truthy
+
+      wait_for_js
+      driver.execute_script("$('#submit_quiz_form .btn-primary').click()")
+
+      keep_trying_until { expect(f('.quiz-submission .quiz_score .score_value')).to be_displayed }
+      quiz_sub = @fake_student.reload.submissions.where(assignment_id: quiz.assignment).first
+      expect(quiz_sub).to be_present
+      expect(quiz_sub.workflow_state).to eq "graded"
     end
   end
 end

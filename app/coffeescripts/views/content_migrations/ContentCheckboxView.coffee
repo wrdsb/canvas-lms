@@ -1,17 +1,32 @@
 define [
+  'jquery'
   'Backbone'
   'jst/content_migrations/ContentCheckbox'
   'jst/content_migrations/ContentCheckboxCollection'
   'compiled/collections/content_migrations/ContentCheckboxCollection'
   'compiled/views/CollectionView'
   'compiled/str/TextHelper'
-], (Backbone, template, checkboxCollectionTemplate, CheckboxCollection, CollectionView, TextHelper) ->
+], ($, Backbone, template, checkboxCollectionTemplate, CheckboxCollection, CollectionView, TextHelper) ->
   class ContentCheckboxView extends Backbone.View
     template: template
+    tagName: 'li'
+    attributes: -> 
+      attr = {}
+      attr.role = "treeitem"
+      attr.id = "treeitem-#{@cid}"
+      attr['data-type'] = @model.get('type')
+      attr['aria-checked'] = false
+      attr['aria-level'] = @model.collection?.options.ariaLevel
+
+      if @model.collection?.isTopLevel
+        attr.class = "top-level-treeitem"
+      else
+        attr.class = "normal-treeitem"
+
+      attr
 
     els: 
       '[data-content=sublevelCheckboxes]' : '$sublevelCheckboxes'
-      '.showHide'                         : '$showHide'
 
     # Bind a change event only to top level checkboxes that are 
     # initially loaded.
@@ -21,20 +36,21 @@ define [
       @hasSubItemsUrl = !!@model.get('sub_items_url')
       @hasSubItems = !!@model.get('sub_items')
 
-      @$el.on  "click", "#selectAll-#{@cid}", @checkAllChildren
-      @$el.on  "click", "#selectNone-#{@cid}", @uncheckAllChildren
-
-      if @hasSubItemsUrl
-        @$el.on "change", "#checkbox-#{@cid}", @toplevelCheckboxEvents
+      if @hasSubItemsUrl || @hasSubItems
+        @$el.on "fetchCheckboxes", @fetchCheckboxes
 
     toJSON: -> 
       json = super
       json.hasSubCheckboxes = @hasSubItems || @hasSubItemsUrl
-      json.onlyLabel = @hasSubItems and !@hasSubItemsUrl
-      json.checked = @model.collection?.isTopLevel
+      json.isTopLevel = @model.collection?.isTopLevel
       json.iconClass = @getIconClass()
       json.count = @model.get('count')
-      json.showHide = @model.get('count') || (@hasSubItems and @model.get('sub_items').length > 2)
+
+      json.screenreaderType = {
+        assignment_groups: 'group'
+        folders: 'folders'
+      }[@model.get('type')]
+
       json
 
     # This is a map for icon classes depending on the type of checkbox that is being
@@ -56,11 +72,10 @@ define [
       groups:                       "icon-group"
       learning_outcomes:            "icon-standards"
       attachments:                  "icon-document"
-      assignment_groups:            "icon-gradebook"
+      assignment_groups:            "icon-folder"
       folders:                      "icon-folder"
-
     
-    # This retreaves the iconClass out of the iconClasses object map
+    # This retrieves the iconClass out of the iconClasses object map
     # @api private
 
     getIconClass: -> @iconClasses[@model.get('type')]
@@ -69,66 +84,55 @@ define [
     # and render the sub-level checkboxes in the collection view. 
     # @api custom backbone override
 
-    afterRender: -> 
+    afterRender: ->
+      if @hasSubItemsUrl || @hasSubItems
+        @$el.attr('aria-expanded', false)
+
       if @hasSubItems
-        @sublevelCheckboxes = new CheckboxCollection @model.get('sub_items')
+        @sublevelCheckboxes = new CheckboxCollection @model.get('sub_items'),
+                                ariaLevel: @model.collection?.ariaLevel + 1
         @renderSublevelCheckboxes()
 
-    # Check/Uncheck all children checkboxes. Slice(1) ensures that we do not
-    # uncheck/check the toplevel checkbox. Instead we leave that for the user
-    # to do.
-    # @api private
-
-    checkAllChildren: (event) => 
-      event.preventDefault()
-      if @model.collection?.isTopLevel
-        @$el.find('[type=checkbox]').slice(1).prop('checked', true)
-      else
-        @$el.find('[type=checkbox]').prop('checked', true)
-
-    uncheckAllChildren: (event) => 
-      event.preventDefault()
-      if @model.collection?.isTopLevel
-        @$el.find('[type=checkbox]').slice(1).prop('checked', false)
-      else
-        @$el.find('[type=checkbox]').prop('checked', false)
+      if @model.get('linked_resource')
+        @attachLinkedResource()
 
     # Determins if we should hide the sublevel checkboxes or 
-    # fetch new ones. 
+    # fetch new ones based on clicking the carrot next to it.
     # @returns undefined
     # @api private
 
-    toplevelCheckboxEvents: (event) => 
+    fetchCheckboxes: (event, options={}) =>
+      event.preventDefault()
+      event.stopPropagation()
       return unless @hasSubItemsUrl
 
-      if $(event.target).is(':checked')
-        @$sublevelCheckboxes.hide()
-        @$showHide.hide()
-      else
-        @$sublevelCheckboxes.show()
-        @$showHide.show()
+      $target = $(event.currentTarget)
 
-        unless @sublevelCheckboxes
-          @fetchSublevelCheckboxes()
-          @renderSublevelCheckboxes()
-    
+      if !@sublevelCheckboxes
+        @fetchSublevelCheckboxes(options.silent)
+        @renderSublevelCheckboxes()
+
     # Attempt to fetch sublevel in a new checkbox collection. Cache
     # the collection so it doesn't call the server twice.
     # @api private
 
-    fetchSublevelCheckboxes: -> 
-      @sublevelCheckboxes = new CheckboxCollection
+    fetchSublevelCheckboxes: (silent) -> 
+      @sublevelCheckboxes = new CheckboxCollection null,
+                              ariaLevel: @model.collection?.ariaLevel + 1
       @sublevelCheckboxes.url = @model.get('sub_items_url')
 
       dfd = @sublevelCheckboxes.fetch()
-      @$el.disableWhileLoading dfd
+      dfd.done => 
+        @$el.trigger 'doneFetchingCheckboxes', @$el.find("#checkbox-#{@cid}")
+      @$el.disableWhileLoading dfd unless silent
+      dfd
     
     # Render all sublevel checkboxes in a collection view. The template
     # should take care of rendering any "sublevel" checkboxes that may
     # be on each of these models. 
     # @api private
 
-    renderSublevelCheckboxes: -> 
+    renderSublevelCheckboxes: ->
       checkboxCollectionView = new CollectionView
                                  collection: @sublevelCheckboxes
                                  itemView: ContentCheckboxView
@@ -136,3 +140,12 @@ define [
                                  template: checkboxCollectionTemplate
 
       checkboxCollectionView.render()
+
+    # Some checkboxes will have a linked resource. If they do, build the linked resource
+    # property and attach it to the checkbox as a data element.
+
+    attachLinkedResource: ->
+      linkedResource = @model.get('linked_resource')
+      property = "copy[#{linkedResource.type}][id_#{linkedResource.migration_id}]"
+
+      @$el.find("#checkbox-#{@cid}").data 'linkedResourceProperty', property

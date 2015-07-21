@@ -4,10 +4,17 @@ define [
 ], (Backbone, template) -> 
   class ProgressingStatusView extends Backbone.View
     template: template
-    initialize: -> @progress = @model.progressModel
-    afterRender: -> 
+    initialize: ->
+      super
+      @progress = @model.progressModel
       @model.on 'change:workflow_state', @render
       @progress.on 'change:workflow_state', @render
+
+    render: ->
+      if statusView = @model.collection?.view?.getStatusView(@model)
+        @$el.html(statusView)
+      else
+        super
 
     toJSON: -> 
       json = super

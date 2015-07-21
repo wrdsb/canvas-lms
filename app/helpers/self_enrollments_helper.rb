@@ -17,18 +17,14 @@
 #
 
 module SelfEnrollmentsHelper
+  def self_enrollment_url
+    api_v1_course_enrollments_url(@course, enrollment: {self_enrollment_code: params[:self_enrollment_code], user_id: "self"})
+  end
+
   def registration_summary
     # allow plugins to display additional content
     if @registration_summary
       markdown(@registration_summary, :never) rescue nil
-    end
-  end
-
-  def privacy_link
-    if @privacy_link
-      @privacy_link
-    else
-      "http://www.instructure.com/privacy-policy"
     end
   end
 end

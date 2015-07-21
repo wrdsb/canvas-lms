@@ -1,11 +1,14 @@
-<h3 class="title">
+<h2 class="screenreader-outcome-title screenreader-only" tabindex="0" aria-alert="true">
+  {{title}}
+</h2>
+<h2 class="title" role="presentation">
   <i class="icon-note-light"></i>
   {{#unless isLargeRoster}}
-    <a href='outcomes/{{id}}'>{{title}}</a>
+    <a href='{{html_url}}'>{{title}}</a>
   {{else}}
     {{title}}
   {{/unless}}
-</h3>
+</h2>
 <div class="description">
   {{{description}}}
 </div>
@@ -24,17 +27,6 @@
   </tr>
 </table>
 
-{{#unless readOnly}}
-{{#if native}}
-<a href="#" style="float:right" class="edit_button ui-button ui-widget ui-state-default ui-corner-all" role="button">
-  {{#t "links.edit_outcome"}}Edit Outcome{{/t}}
-</a>
-{{/if}}
-<a href="#" style="float:right" class="delete_button ui-button ui-widget ui-state-default ui-corner-all" role="button">
-  {{#t "links.delete_outcome"}}Delete Outcome{{/t}}
-</a>
-{{/unless}}
-
 {{#if setQuizMastery}}
   <label for="outcome_mastery_at">
     {{#t "mastery_at_label"}}Set mastery for any score at or above:{{/t}}
@@ -48,7 +40,44 @@
       {{#t "use_for_scoring"}}Use this criterion for scoring{{/t}}
     </label>
   {{else}}
-    <p>{{#t "point_mastery"}}Mastery at {{mastery_points}} points{{/t}}</p>
+    <p>{{#t "point_mastery"}}Mastery: {{mastery_points}} Points{{/t}}</p>
   {{/if}}
 {{/if}}
 
+<div id="calculation_method" data-calculation-method="{{calculation_method}}">
+  {{#t}}Calculation Method{{/t}}: {{ friendlyCalculationMethod }}
+</div>
+
+<div class="content-box">
+  <div class="grid-row">
+    <div class="col-xs-2"></div>
+    <!-- Hook for OutcomeCalculationMethodFormView -->
+    <div class="col-xs-10 outcome-calculation-method-form"></div>
+  </div>
+</div>
+
+{{#if assessedInContext}}
+  <div id="assessed_info_banner" class="alert alert-info">
+    <span>
+      {{#t}}This outcome has been used to assess a student and cannot be edited or deleted{{/t}}
+    </span>
+  </div>
+{{/if}}
+
+{{#unless readOnly}}
+  <a href="#" style="float:right" class="move_button ui-button ui-widget ui-state-default ui-corner-all" role="button">
+    {{#t}}Move Outcome{{/t}}
+  </a>
+
+  {{#if native}}
+    <a href="#" style="float:right" class="edit_button ui-button ui-widget ui-state-default ui-corner-all" role="button"
+      {{#if assessedInContext}} disabled tabindex="-1" aria-hidden="true" {{/if}}>
+      {{#t "links.edit_outcome"}}Edit Outcome{{/t}}
+    </a>
+  {{/if}}
+
+  <a href="#" style="float:right" class="delete_button ui-button ui-widget ui-state-default ui-corner-all" role="button"
+    {{#if assessedInContext}} disabled tabindex="-1" aria-hidden="true" {{/if}}>
+    {{#t "links.delete_outcome"}}Delete Outcome{{/t}}
+  </a>
+{{/unless}}

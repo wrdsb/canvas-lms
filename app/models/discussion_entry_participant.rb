@@ -25,6 +25,11 @@ class DiscussionEntryParticipant < ActiveRecord::Base
   belongs_to :discussion_entry
   belongs_to :user
 
+  EXPORTABLE_ATTRIBUTES = [:id, :discussion_entry_id, :user_id, :workflow_state, :forced_read_state]
+  EXPORTABLE_ASSOCIATIONS = [:discussion_entry, :user]
+
+  validates_presence_of :discussion_entry_id, :user_id, :workflow_state
+
   def self.read_entry_ids(entry_ids, user)
     self.where(:user_id => user, :discussion_entry_id => entry_ids, :workflow_state => 'read').
       pluck(:discussion_entry_id)
@@ -35,10 +40,19 @@ class DiscussionEntryParticipant < ActiveRecord::Base
       pluck(:discussion_entry_id)
   end
 
+  def self.entry_ratings(entry_ids, user)
+    ratings = self.where(:user_id => user, :discussion_entry_id => entry_ids).where('rating IS NOT NULL')
+    Hash[ratings.map{|x| [x.discussion_entry_id, x.rating]}]
+  end
+
   workflow do
     state :unread
     state :read
   end
 
-  scope :read, where(:workflow_state => 'read')
+  scope :read, -> { where(:workflow_state => 'read') }
+  scope :existing_participants, ->(user, entry_id) {
+    select([:id, :discussion_entry_id]).
+      where(user_id: user, discussion_entry_id: entry_id)
+  }
 end

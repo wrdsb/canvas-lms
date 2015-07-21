@@ -22,26 +22,26 @@ describe AttachmentHelper do
   include ApplicationHelper
   include AttachmentHelper
 
-  def user_file_inline_view_url(context, att_id)
-    "expected_context_url"
-  end
-
-  before do
+  before :once do
     course_with_student
     @att = attachment_model(:context => @user)
-    @att.stubs(:scribdable?).returns(true)
-    @att.stubs(:scribd_doc).returns({})
   end
 
-  it "should generate data element for expected context" do
-    doc_preview_attributes(@att).should =~ %r{data-attachment_view_inline_ping_url=expected_context_url}
+  it "should return a valid crocodoc session url" do
+    @current_user = @student
+    @att.stubs(:crocodoc_available?).returns(true)
+    attrs = doc_preview_attributes(@att)
+    expect(attrs).to match /crocodoc_session/
+    expect(attrs).to match /#{@current_user.id}/
+    expect(attrs).to match /#{@att.id}/
   end
 
-  it "should leave out inline data element for unexpected context" do
-    asmnt = @course.assignments.create!(:title => "some assignment", :submission_types => 'online_upload')
-    @att.context = asmnt
-    @att.save!
-
-    doc_preview_attributes(@att).should_not =~ %r{data-attachment_view_inline_ping_url}
+  it "should return a valid canvadoc session url" do
+    @current_user = @student
+    @att.stubs(:canvadocable?).returns(true)
+    attrs = doc_preview_attributes(@att)
+    expect(attrs).to match /canvadoc_session/
+    expect(attrs).to match /#{@current_user.id}/
+    expect(attrs).to match /#{@att.id}/
   end
 end

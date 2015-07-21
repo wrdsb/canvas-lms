@@ -16,6 +16,7 @@ define [
     AUTO_PEER_REVIEWS         = '#assignment_automatic_peer_reviews'
     PEER_REVIEWS_DETAILS      = '#peer_reviews_details'
     AUTO_PEER_REVIEWS_OPTIONS = '#automatic_peer_reviews_options'
+    ANONYMOUS_PEER_REVIEWS    = '#anonymous_peer_reviews'
 
     events: do ->
       events = {}
@@ -35,6 +36,7 @@ define [
 
     @optionProperty 'parentModel'
     @optionProperty 'nested'
+    @optionProperty 'hideAnonymousPeerReview'
 
     handlePeerReviewsChange: =>
       @$peerReviewsDetails.toggleAccessibly @$peerReviews.prop('checked')
@@ -46,9 +48,15 @@ define [
       @$peerReviewsAssignAt.datetime_field()
 
     toJSON: =>
+      frozenAttributes = @parentModel.frozenAttributes()
+
+      anonymousPeerReviews: @parentModel.anonymousPeerReviews()
       peerReviews: @parentModel.peerReviews()
       automaticPeerReviews: @parentModel.automaticPeerReviews()
       peerReviewCount: @parentModel.peerReviewCount()
       peerReviewsAssignAt: @parentModel.peerReviewsAssignAt()
-      frozenAttributes: @parentModel.frozenAttributes()
+      frozenAttributes: frozenAttributes
+      peerReviewsFrozen: _.include(frozenAttributes, 'peer_reviews')
       nested: @nested
+      prefix: 'assignment' if @nested
+      hideAnonymousPeerReview: @hideAnonymousPeerReview

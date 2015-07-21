@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 - 2013 Instructure, Inc.
+# Copyright (C) 2011 - 2014 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -16,12 +16,112 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
+require 'atom'
+
 # @API Conversations
 #
 # API for creating, accessing and updating user conversations.
+#
+# @model Conversation
+#     {
+#       "id": "Conversation",
+#       "description": "",
+#       "properties": {
+#         "id": {
+#           "description": "the unique identifier for the conversation.",
+#           "example": 2,
+#           "type": "integer",
+#           "format": "int64"
+#         },
+#         "subject": {
+#           "description": "the subject of the conversation.",
+#           "example": 2,
+#           "type": "string"
+#         },
+#         "workflow_state": {
+#           "description": "The current state of the conversation (read, unread or archived).",
+#           "example": "unread",
+#           "type": "string"
+#         },
+#         "last_message": {
+#           "description": "A <=100 character preview from the most recent message.",
+#           "example": "sure thing, here's the file",
+#           "type": "string"
+#         },
+#         "start_at": {
+#           "description": "the date and time at which the last message was sent.",
+#           "example": "2011-09-02T12:00:00Z",
+#           "type": "datetime"
+#         },
+#         "message_count": {
+#           "description": "the number of messages in the conversation.",
+#           "example": 2,
+#           "type": "integer"
+#         },
+#         "subscribed": {
+#           "description": "whether the current user is subscribed to the conversation.",
+#           "example": true,
+#           "type": "boolean"
+#         },
+#         "private": {
+#           "description": "whether the conversation is private.",
+#           "example": true,
+#           "type": "boolean"
+#         },
+#         "starred": {
+#           "description": "whether the conversation is starred.",
+#           "example": true,
+#           "type": "boolean"
+#         },
+#         "properties": {
+#           "description": "Additional conversation flags (last_author, attachments, media_objects). Each listed property means the flag is set to true (i.e. the current user is the most recent author, there are attachments, or there are media objects)",
+#           "type": "array",
+#           "items": {
+#             "type": "string"
+#           }
+#         },
+#         "audience": {
+#           "description": "Array of user ids who are involved in the conversation, ordered by participation level, then alphabetical. Excludes current user, unless this is a monologue.",
+#           "type": "array",
+#           "items": {
+#             "type": "integer"
+#           }
+#         },
+#         "audience_contexts": {
+#           "description": "Most relevant shared contexts (courses and groups) between current user and other participants. If there is only one participant, it will also include that user's enrollment(s)/ membership type(s) in each course/group.",
+#           "type": "array",
+#           "items": {
+#             "type": "string"
+#           }
+#         },
+#         "avatar_url": {
+#           "description": "URL to appropriate icon for this conversation (custom, individual or group avatar, depending on audience).",
+#           "example": "https://canvas.instructure.com/images/messages/avatar-group-50.png",
+#           "type": "string"
+#         },
+#         "participants": {
+#           "description": "Array of users (id, name) participating in the conversation. Includes current user.",
+#           "type": "array",
+#           "items": {
+#             "type": "string"
+#           }
+#         },
+#         "visible": {
+#           "description": "indicates whether the conversation is visible under the current scope and filter. This attribute is always true in the index API response, and is primarily useful in create/update responses so that you can know if the record should be displayed in the UI. The default scope is assumed, unless a scope or filter is passed to the create/update API call.",
+#           "example": true,
+#           "type": "boolean"
+#         },
+#         "context_name": {
+#           "description": "Name of the course or group in which the conversation is occurring.",
+#           "example": "Canvas 101",
+#           "type": "string"
+#         }
+#       }
+#     }
 class ConversationsController < ApplicationController
   include ConversationsHelper
   include SearchHelper
+  include KalturaHelper
   include Api::V1::Conversation
   include Api::V1::Progress
 
@@ -36,33 +136,39 @@ class ConversationsController < ApplicationController
   # batch up all delayed jobs to make this more responsive to the user
   batch_jobs_in_actions :only => :create
 
-  API_ALLOWED_FIELDS = %w{workflow_state subscribed starred scope filter}
+  API_ALLOWED_FIELDS = %w{workflow_state subscribed starred scope filter}.freeze
 
   # @API List conversations
   # Returns the list of conversations for the current user, most recent ones first.
   #
-  # @argument scope [optional, "unread"|"starred"|"archived"]
+  # @argument scope [String, "unread"|"starred"|"archived"]
   #   When set, only return conversations of the specified type. For example,
   #   set to "unread" to return only conversations that haven't been read.
   #   The default behavior is to return all non-archived conversations (i.e.
   #   read and unread).
   #
-  # @argument filter [optional, course_id|group_id|user_id]
-  #   When set, only return conversations for the specified course, group
-  #   or user. The id should be prefixed with its type, e.g. "user_123" or
-  #   "course_456"
+  # @argument filter[] [String, course_id|group_id|user_id]
+  #   When set, only return conversations for the specified courses, groups
+  #   or users. The id should be prefixed with its type, e.g. "user_123" or
+  #   "course_456". Can be an array (by setting "filter[]") or single value
+  #   (by setting "filter")
   #
-  # @argument interleave_submissions Boolean, default false. If true, the
-  #   message_count will also include these submission-based messages in the
-  #   total. See the show action for more information.
+  # @argument filter_mode ["and"|"or", default "or"]
+  #   When filter[] contains multiple filters, combine them with this mode,
+  #   filtering conversations that at have at least all of the contexts ("and")
+  #   or at least one of the contexts ("or")
   #
-  # @argument include_all_conversation_ids Boolean, default false. If true,
+  # @argument interleave_submissions [Boolean] (Obsolete) Submissions are no
+  #   longer linked to conversations. This parameter is ignored.
+  #
+  # @argument include_all_conversation_ids [Boolean] Default is false. If true,
   #   the top-level element of the response will be an object rather than
   #   an array, and will have the keys "conversations" which will contain the
   #   paged conversation data, and "conversation_ids" which will contain the
   #   ids of all conversations under this scope/filter in the same order.
   #
   # @response_field id The unique identifier for the conversation.
+  # @response_field subject The subject of the conversation.
   # @response_field workflow_state The current state of the conversation
   #   (read, unread or archived)
   # @response_field last_message A <=100 character preview from the most
@@ -100,6 +206,7 @@ class ConversationsController < ApplicationController
   #   [
   #     {
   #       "id": 2,
+  #       "subject": "conversations api example",
   #       "workflow_state": "unread",
   #       "last_message": "sure thing, here's the file",
   #       "last_message_at": "2011-09-02T12:00:00Z",
@@ -112,16 +219,23 @@ class ConversationsController < ApplicationController
   #       "audience_contexts": {"courses": {"1": ["StudentEnrollment"]}, "groups": {}},
   #       "avatar_url": "https://canvas.instructure.com/images/messages/avatar-group-50.png",
   #       "participants": [{"id": 1, "name": "Joe TA"}, {"id": 2, "name": "Jane Teacher"}],
-  #       "visible": true
+  #       "visible": true,
+  #       "context_name": "Canvas 101"
   #     }
   #   ]
+  # @returns [Conversation]
+  #
   def index
     if request.format == :json
+      @conversations_scope = @conversations_scope.where('message_count > 0')
       conversations = Api.paginate(@conversations_scope, self, api_v1_conversations_url)
       # optimize loading the most recent messages for each conversation into a single query
       ConversationParticipant.preload_latest_messages(conversations, @current_user)
-      @conversations_json = conversations.map{ |c| conversation_json(c, @current_user, session, :include_participant_avatars => false, :include_participant_contexts => false, :visible => true) }
-  
+      @conversations_json = conversations_json(conversations, @current_user,
+        session, include_participant_avatars: false,
+        include_participant_contexts: false, visible: true,
+        include_context_name: true, include_beta: params[:include_beta])
+
       if params[:include_all_conversation_ids]
         @conversations_json = {:conversations => @conversations_json, :conversation_ids => @conversations_scope.conversation_ids}
       end
@@ -129,24 +243,33 @@ class ConversationsController < ApplicationController
     else
       return redirect_to conversations_path(:scope => params[:redirect_scope]) if params[:redirect_scope]
       @current_user.reset_unread_conversations_counter
-      load_all_contexts :permissions => [:manage_user_notes]
-      notes_enabled = @current_user.associated_accounts.any?{|a| a.enable_user_notes }
-      can_add_notes_for_account = notes_enabled && @current_user.associated_accounts.any?{|a| a.grants_right?(@current_user, nil, :manage_students) }
-      js_env(:CONVERSATIONS => {
-        :USER => conversation_users_json([@current_user], @current_user, session, :include_participant_contexts => false).first,
-        :CONTEXTS => @contexts,
-        :NOTES_ENABLED => notes_enabled,
-        :CAN_ADD_NOTES_FOR_ACCOUNT => can_add_notes_for_account,
-        :SHOW_INTRO => !@current_user.watched_conversations_intro?,
-        :FOLDER_ID => @current_user.conversation_attachments_folder.id,
-        :MEDIA_COMMENTS_ENABLED => feature_enabled?(:kaltura),
-      }, :CONTEXT_ACTION_SOURCE => :conversation)
+      @current_user.reload
+
+      hash = {
+        :ATTACHMENTS_FOLDER_ID => @current_user.conversation_attachments_folder.id,
+        :ACCOUNT_CONTEXT_CODE => "account_#{@domain_root_account.id}",
+        :MAX_GROUP_CONVERSATION_SIZE => Conversation.max_group_conversation_size
+      }
+
+      notes_enabled_accounts = @current_user.associated_accounts.where(enable_user_notes: true)
+
+      hash[:NOTES_ENABLED] = notes_enabled_accounts.any?
+      hash[:CAN_ADD_NOTES_FOR_ACCOUNT] = notes_enabled_accounts.any? {|a| a.grants_right?(@current_user, :manage_students) }
+
+      if hash[:NOTES_ENABLED] && !hash[:CAN_ADD_NOTES_FOR_ACCOUNT]
+        course_note_permissions = {}
+        @current_user.enrollments.active.of_instructor_type.includes(:course).each do |enrollment|
+          course_note_permissions[enrollment.course_id] = true if enrollment.has_permission_to?(:manage_user_notes)
+        end
+        hash[:CAN_ADD_NOTES_FOR_COURSES] = course_note_permissions
+      end
+      js_env(CONVERSATIONS: hash)
+      return render :index_new
     end
   end
 
-  # New Conversations UI. When finished, move back to index action.
-  def index_new
-    return unless authorized_action(Account.site_admin, @current_user, :become_user)
+  def toggle_new_conversations
+    redirect_to action: 'index'
   end
 
   # @API Create a conversation
@@ -154,44 +277,96 @@ class ConversationsController < ApplicationController
   # an existing private conversation with the given recipients, it will be
   # reused.
   #
-  # @argument recipients[] An array of recipient ids. These may be user ids
-  #   or course/group ids prefixed with "course_" or "group_" respectively,
-  #   e.g. recipients[]=1&recipients[]=2&recipients[]=course_3
-  # @argument body The message to be sent
-  # @argument group_conversation [true|false] Ignored if there is just one
-  #   recipient, defaults to false. If true, this will be a group conversation
-  #   (i.e. all recipients will see all messages and replies). If false,
-  #   individual private conversations will be started with each recipient.
-  # @argument attachment_ids[] An array of attachments ids. These must be
-  #   files that have been previously uploaded to the sender's "conversation
-  #   attachments" folder.
-  # @argument media_comment_id Media comment id of an audio of video file to
-  #   be associated with this message.
-  # @argument media_comment_type ["audio"|"video"] Type of the associated
-  #   media file
-  # @argument mode ["sync"|"async"] Determines whether the messages will be
-  #   created/sent synchronously or asynchronously. Defaults to sync, and this
-  #   option is ignored if this is a group conversation or there is just one
-  #   recipient (i.e. it must be a bulk private message). When sent async, the
-  #   response will be an empty array (batch status can be queried via the
-  #   {api:ConversationsController#batches batches API})
-  # @argument scope [optional, "unread"|"starred"|"archived"]
+  # @argument recipients[] [Required, String]
+  #   An array of recipient ids. These may be user ids or course/group ids
+  #   prefixed with "course_" or "group_" respectively, e.g.
+  #   recipients[]=1&recipients[]=2&recipients[]=course_3
+  #
+  # @argument subject [String]
+  #   The subject of the conversation. This is ignored when reusing a
+  #   conversation. Maximum length is 255 characters.
+  #
+  # @argument body [Required, String]
+  #   The message to be sent
+  #
+  # @argument group_conversation [Boolean]
+  #   Defaults to false. If true, this will be a group conversation (i.e. all
+  #   recipients may see all messages and replies). If false, individual private
+  #   conversations will be started with each recipient. Must be set false if the
+  #   number of recipients is over the set maximum (default is 100).
+  #
+  # @argument attachment_ids[] [String]
+  #   An array of attachments ids. These must be files that have been previously
+  #   uploaded to the sender's "conversation attachments" folder.
+  #
+  # @argument media_comment_id [String]
+  #   Media comment id of an audio of video file to be associated with this
+  #   message.
+  #
+  # @argument media_comment_type [String, "audio"|"video"]
+  #   Type of the associated media file
+  #
+  # @argument user_note [Boolean]
+  #   Will add a faculty journal entry for each recipient as long as the user
+  #   making the api call has permission, the recipient is a student and
+  #   faculty journals are enabled in the account.
+  #
+  # @argument mode [String, "sync"|"async"]
+  #   Determines whether the messages will be created/sent synchronously or
+  #   asynchronously. Defaults to sync, and this option is ignored if this is a
+  #   group conversation or there is just one recipient (i.e. it must be a bulk
+  #   private message). When sent async, the response will be an empty array
+  #   (batch status can be queried via the {api:ConversationsController#batches batches API})
+  #
+  # @argument scope [String, "unread"|"starred"|"archived"]
   #   Used when generating "visible" in the API response. See the explanation
   #   under the {api:ConversationsController#index index API action}
-  # @argument filter [optional, course_id|group_id|user_id]
+  # @argument filter[] [String, course_id|group_id|user_id]
   #   Used when generating "visible" in the API response. See the explanation
   #   under the {api:ConversationsController#index index API action}
+  # @argument filter_mode ["and"|"or", default "or"]
+  #   Used when generating "visible" in the API response. See the explanation
+  #   under the {api:ConversationsController#index index API action}
+  #
+  # @argument context_code [String]
+  #   The course or group that is the context for this conversation. Same format
+  #   as courses or groups in the recipients argument.
   def create
     return render_error('recipients', 'blank') if params[:recipients].blank?
     return render_error('recipients', 'invalid') if @recipients.blank?
     return render_error('body', 'blank') if params[:body].blank?
+    context_type = nil
+    context_id = nil
+    if params[:context_code].present?
+      context = Context.find_by_asset_string(params[:context_code])
+      return render_error('context_code', 'invalid') unless valid_context?(context)
 
-    batch_private_messages = !value_to_boolean(params[:group_conversation]) && @recipients.size > 1
+      context_type = context.class.name
+      context_id = context.id
+    end
 
-    message = build_message
-    if batch_private_messages
+    params[:recipients].each do |recipient|
+      if recipient =~ /\Acourse_\d+\Z/ &&
+         !Context.find_by_asset_string(recipient).try(:grants_right?, @current_user, session, :send_messages_all)
+        return render_error('recipients', 'restricted by role')
+      end
+    end
+
+    group_conversation     = value_to_boolean(params[:group_conversation])
+    batch_private_messages = !group_conversation && @recipients.size > 1
+    batch_group_messages   = group_conversation && value_to_boolean(params[:bulk_message])
+    message                = build_message
+
+    if !batch_group_messages && @recipients.size > Conversation.max_group_conversation_size
+      return render_error('recipients', 'too many for group conversation')
+    end
+
+    if batch_private_messages || batch_group_messages
       mode = params[:mode] == 'async' ? :async : :sync
-      batch = ConversationBatch.generate(message, @recipients, mode, :tags => @tags)
+      batch = ConversationBatch.generate(message, @recipients, mode,
+        subject: params[:subject], context_type: context_type,
+        context_id: context_id, tags: @tags, group: batch_group_messages)
+
       if mode == :async
         headers['X-Conversation-Batch-Id'] = batch.id.to_s
         return render :json => [], :status => :accepted
@@ -201,16 +376,18 @@ class ConversationsController < ApplicationController
       conversations = ConversationParticipant.where(:id => batch.conversations).includes(:conversation).order("visible_last_authored_at DESC, last_message_at DESC, id DESC")
       Conversation.preload_participants(conversations.map(&:conversation))
       ConversationParticipant.preload_latest_messages(conversations, @current_user)
-      visibility_map = infer_visibility(*conversations) 
+      visibility_map = infer_visibility(conversations)
       render :json => conversations.map{ |c| conversation_json(c, @current_user, session, :include_participant_avatars => false, :include_participant_contexts => false, :visible => visibility_map[c.conversation_id]) }, :status => :created
     else
-      @conversation = @current_user.initiate_conversation(@recipients)
-      @conversation.add_message(message, :tags => @tags, :update_for_sender => false)
+      @conversation = @current_user.initiate_conversation(@recipients, !group_conversation, :subject => params[:subject], :context_type => context_type, :context_id => context_id)
+      @conversation.add_message(message, :tags => @tags, :update_for_sender => false, :cc_author => true)
       render :json => [conversation_json(@conversation.reload, @current_user, session, :include_indirect_participants => true, :messages => [message])], :status => :created
     end
+  rescue ActiveRecord::RecordInvalid => err
+    render :json => err.record.errors, :status => :bad_request
   end
 
-  # @API
+  # @API Get running batches
   # Returns any currently running conversation batches for the current user.
   # Conversation batches are created when a bulk private message is sent
   # asynchronously (see the mode argument to the {api:ConversationsController#create create API action}).
@@ -219,6 +396,7 @@ class ConversationsController < ApplicationController
   #   [
   #     {
   #       "id": 1,
+  #       "subject": "conversations api example",
   #       "workflow_state": "created",
   #       "completion": 0.1234,
   #       "tags": [],
@@ -236,30 +414,31 @@ class ConversationsController < ApplicationController
   #     }
   #   ]
   def batches
-    batches = Api.paginate(@current_user.conversation_batches.in_progress,
+    batches = Api.paginate(@current_user.conversation_batches.in_progress.order(:id),
                            self,
-                           api_v1_conversations_batches_url,
-                           :order => :id)
+                           api_v1_conversations_batches_url)
     render :json => batches.map{ |m| conversation_batch_json(m, @current_user, session) }
   end
 
   # @API Get a single conversation
   # Returns information for a single conversation. Response includes all
-  # fields that are present in the list/index action, as well as messages,
-  # submissions, and extended participant information.
+  # fields that are present in the list/index action as well as messages
+  # and extended participant information.
   #
-  # @argument interleave_submissions Boolean, default false. If true,
-  #   submission data will be returned as first class messages interleaved
-  #   with other messages. The submission details (comments, assignment, etc.)
-  #   will be stored as the submission property on the message. Note that if
-  #   set, the message_count will also include these messages in the total.
-  # @argument scope [optional, "unread"|"starred"|"archived"]
+  # @argument interleave_submissions [Boolean] (Obsolete) Submissions are no
+  #   longer linked to conversations. This parameter is ignored.
+  #
+  # @argument scope [String, "unread"|"starred"|"archived"]
   #   Used when generating "visible" in the API response. See the explanation
   #   under the {api:ConversationsController#index index API action}
-  # @argument filter [optional, course_id|group_id|user_id]
+  # @argument filter[] [String, course_id|group_id|user_id]
   #   Used when generating "visible" in the API response. See the explanation
   #   under the {api:ConversationsController#index index API action}
-  # @argument auto_mark_as_read Boolean, default true. If true, unread
+  # @argument filter_mode ["and"|"or", default "or"]
+  #   Used when generating "visible" in the API response. See the explanation
+  #   under the {api:ConversationsController#index index API action}
+  #
+  # @argument auto_mark_as_read [Boolean] Default true. If true, unread
   #   conversations will be automatically marked as read. This will default
   #   to false in a future API release, so clients should explicitly send
   #   true if that is the desired behavior.
@@ -277,15 +456,14 @@ class ConversationsController < ApplicationController
   #   media_comment:: Audio/video comment data for this message (if applicable). Fields include: display_name, content-type, media_id, media_type, url
   #   forwarded_messages:: If this message contains forwarded messages, they will be included here (same format as this list). Note that those messages may have forwarded messages of their own, etc.
   #   attachments:: Array of attachments for this message. Fields include: display_name, content-type, filename, url
-  # @response_field submissions Array of assignment submissions having
-  #   comments relevant to this conversation. These should be interleaved with
-  #   the messages when displaying to the user. See the {api:SubmissionsApiController#index Submissions API documentation}
-  #   for details on the fields included. This response includes
-  #   the submission_comments and assignment associations.
+  # @response_field submissions (Obsolete) Array of assignment submissions having
+  #   comments relevant to this conversation. Submissions are no longer linked to conversations.
+  #   This field will always be nil or empty.
   #
   # @example_response
   #   {
   #     "id": 2,
+  #     "subject": "conversations api example",
   #     "workflow_state": "unread",
   #     "last_message": "sure thing, here's the file",
   #     "last_message_at": "2011-09-02T12:00:00-06:00",
@@ -348,42 +526,55 @@ class ConversationsController < ApplicationController
     end
 
     @conversation.update_attribute(:workflow_state, "read") if @conversation.unread? && auto_mark_as_read?
-    messages = submissions = nil
+    messages = nil
     Shackles.activate(:slave) do
       messages = @conversation.messages
-      ConversationMessage.send(:preload_associations, messages, :asset)
-      submissions = messages.map(&:submission).compact
-      Submission.send(:preload_associations, submissions, [:assignment, :submission_comments])
-      if interleave_submissions
-        submissions = nil
-      else
-        messages = messages.select{ |message| message.submission.nil? }
-      end
+      ActiveRecord::Associations::Preloader.new(messages, :asset).run
     end
+
     render :json => conversation_json(@conversation,
                                       @current_user,
                                       session,
-                                      :include_indirect_participants => true,
-                                      :messages => messages,
-                                      :submissions => submissions)
+                                      include_participant_contexts: value_to_boolean(params.fetch(:include_participant_contexts, true)),
+                                      include_indirect_participants: true,
+                                      messages: messages,
+                                      submissions: [],
+                                      include_beta: params[:include_beta],
+                                      include_context_name: true)
   end
 
   # @API Edit a conversation
   # Updates attributes for a single conversation.
   #
-  # @argument conversation[workflow_state] ["read"|"unread"|"archived"] Change the state of this conversation
-  # @argument conversation[subscribed] [true|false] Toggle the current user's subscription to the conversation (only valid for group conversations). If unsubscribed, the user will still have access to the latest messages, but the conversation won't be automatically flagged as unread, nor will it jump to the top of the inbox.
-  # @argument conversation[starred] [true|false] Toggle the starred state of the current user's view of the conversation.
-  # @argument scope [optional, "unread"|"starred"|"archived"]
+  # @argument conversation[subject] [String]
+  #   Change the subject of this conversation
+  #
+  # @argument conversation[workflow_state] [String, "read"|"unread"|"archived"]
+  #   Change the state of this conversation
+  #
+  # @argument conversation[subscribed] [Boolean]
+  #   Toggle the current user's subscription to the conversation (only valid for
+  #   group conversations). If unsubscribed, the user will still have access to
+  #   the latest messages, but the conversation won't be automatically flagged
+  #   as unread, nor will it jump to the top of the inbox.
+  #
+  # @argument conversation[starred] [Boolean]
+  #   Toggle the starred state of the current user's view of the conversation.
+  #
+  # @argument scope [String, "unread"|"starred"|"archived"]
   #   Used when generating "visible" in the API response. See the explanation
   #   under the {api:ConversationsController#index index API action}
-  # @argument filter [optional, course_id|group_id|user_id]
+  # @argument filter[] [String, course_id|group_id|user_id]
+  #   Used when generating "visible" in the API response. See the explanation
+  #   under the {api:ConversationsController#index index API action}
+  # @argument filter_mode ["and"|"or", default "or"]
   #   Used when generating "visible" in the API response. See the explanation
   #   under the {api:ConversationsController#index index API action}
   #
   # @example_response
   #   {
   #     "id": 2,
+  #     "subject": "conversations api example",
   #     "workflow_state": "read",
   #     "last_message": "sure thing, here's the file",
   #     "last_message_at": "2011-09-02T12:00:00-06:00",
@@ -421,6 +612,7 @@ class ConversationsController < ApplicationController
   # @example_response
   #   {
   #     "id": 2,
+  #     "subject": "conversations api example",
   #     "workflow_state": "read",
   #     "last_message": null,
   #     "last_message_at": null,
@@ -437,8 +629,8 @@ class ConversationsController < ApplicationController
 
   # internal api
   # @example_request
-  #     curl https://<canvas>/api/v1/conversations/:id/delete_for_all \ 
-  #       -X DELETE \ 
+  #     curl https://<canvas>/api/v1/conversations/:id/delete_for_all \
+  #       -X DELETE \
   #       -H 'Authorization: Bearer <token>'
   def delete_for_all
     return unless authorized_action(Account.site_admin, @current_user, :become_user)
@@ -450,16 +642,18 @@ class ConversationsController < ApplicationController
 
   # @API Add recipients
   # Add recipients to an existing group conversation. Response is similar to
-  # the GET/show action, except that omits submissions and only includes the
+  # the GET/show action, except that only includes the
   # latest message (e.g. "joe was added to the conversation by bob")
   #
-  # @argument recipients[] An array of recipient ids. These may be user ids
-  #   or course/group ids prefixed with "course_" or "group_" respectively,
-  #   e.g. recipients[]=1&recipients[]=2&recipients[]=course_3
+  # @argument recipients[] [Required, String]
+  #   An array of recipient ids. These may be user ids or course/group ids
+  #   prefixed with "course_" or "group_" respectively, e.g.
+  #   recipients[]=1&recipients[]=2&recipients[]=course_3
   #
   # @example_response
   #   {
   #     "id": 2,
+  #     "subject": "conversations api example",
   #     "workflow_state": "read",
   #     "last_message": "let's talk this over with jim",
   #     "last_message_at": "2011-09-02T12:00:00-06:00",
@@ -498,21 +692,42 @@ class ConversationsController < ApplicationController
 
   # @API Add a message
   # Add a message to an existing conversation. Response is similar to the
-  # GET/show action, except that omits submissions and only includes the
+  # GET/show action, except that only includes the
   # latest message (i.e. what we just sent)
   #
-  # @argument body The message to be sent
-  # @argument attachment_ids[] An array of attachments ids. These must be
-  #   files that have been previously uploaded to the sender's "conversation
-  #   attachments" folder.
-  # @argument media_comment_id Media comment id of an audio of video file to
-  #   be associated with this message.
-  # @argument media_comment_type ["audio"|"video"] Type of the associated
-  #   media file
+  # @argument body [Required, String]
+  #   The message to be sent.
+  #
+  # @argument attachment_ids[] [String]
+  #   An array of attachments ids. These must be files that have been previously
+  #   uploaded to the sender's "conversation attachments" folder.
+  #
+  # @argument media_comment_id [String]
+  #   Media comment id of an audio of video file to be associated with this
+  #   message.
+  #
+  # @argument media_comment_type [String, "audio"|"video"]
+  #   Type of the associated media file.
+  #
+  # @argument recipients[] [String]
+  # An array of user ids. Defaults to all of the current conversation
+  # recipients. To explicitly send a message to no other recipients,
+  # this array should consist of the logged-in user id.
+  #
+  # @argument included_messages[] [String]
+  # An array of message ids from this conversation to send to recipients
+  # of the new message. Recipients who already had a copy of included
+  # messages will not be affected.
+  #
+  # @argument user_note [Boolean]
+  #   Will add a faculty journal entry for each recipient as long as the user
+  #   making the api call has permission, the recipient is a student and
+  #   faculty journals are enabled in the account.
   #
   # @example_response
   #   {
   #     "id": 2,
+  #     "subject": "conversations api example",
   #     "workflow_state": "unread",
   #     "last_message": "let's talk this over with jim",
   #     "last_message_at": "2011-09-02T12:00:00-06:00",
@@ -543,23 +758,58 @@ class ConversationsController < ApplicationController
   def add_message
     get_conversation(true)
     if params[:body].present?
-      message = build_message
-      @conversation.add_message message, :tags => @tags, :update_for_sender => false
-      render :json => conversation_json(@conversation.reload, @current_user, session, :messages => [message])
+      # allow responses to be sent to anyone who is already a conversation participant.
+      params[:from_conversation_id] = @conversation.conversation_id
+      # not a before_filter because we need to set the above parameter.
+      normalize_recipients
+      # find included_messages
+      message_ids = params[:included_messages]
+      message_ids = message_ids.split(/,/) if message_ids.is_a?(String)
+
+      # these checks could be folded into the initial ConversationMessage lookup for better efficiency
+      if message_ids
+
+        # sanity check: are the messages part of this conversation?
+        db_ids = ConversationMessage.where(:id => message_ids, :conversation_id => @conversation.conversation_id).pluck(:id)
+        unless db_ids.count == message_ids.count
+          return render_error('included_messages', 'not for this conversation')
+        end
+        message_ids = db_ids
+
+        # sanity check: can the user see the included messages?
+        unless ConversationMessageParticipant.where(:conversation_message_id => message_ids,
+            :user_id => @current_user.id).count == message_ids.count
+          return render_error('included_messages', 'not a participant')
+        end
+      end
+
+      message_args = build_message_args
+      if @conversation.should_process_immediately?
+        message = @conversation.process_new_message(message_args, @recipients, message_ids, @tags)
+        render :json => conversation_json(@conversation.reload, @current_user, session, :messages => [message])
+      else
+        @conversation.send_later_enqueue_args(:process_new_message,
+          {:strand => "add_message_#{@conversation.global_conversation_id}", :max_attempts => 1},
+          message_args, @recipients, message_ids, @tags)
+        return render :json => [], :status => :accepted
+      end
     else
-      render :json => {}, :status => :bad_request
+      render :json => {}, :status => :bad_reqquest
     end
   end
 
   # @API Delete a message
-  # Delete messages from this conversation. Note that this only affects this user's view of the conversation.
-  # If all messages are deleted, the conversation will be as well (equivalent to DELETE)
+  # Delete messages from this conversation. Note that this only affects this
+  # user's view of the conversation. If all messages are deleted, the
+  # conversation will be as well (equivalent to DELETE)
   #
-  # @argument remove Array of message ids to be deleted
+  # @argument remove[] [Required, String]
+  #   Array of message ids to be deleted
   #
   # @example_response
   #   {
   #     "id": 2,
+  #     "subject": "conversations api example",
   #     "workflow_state": "read",
   #     "last_message": "sure thing, here's the file",
   #     "last_message_at": "2011-09-02T12:00:00-06:00",
@@ -571,7 +821,10 @@ class ConversationsController < ApplicationController
   #   }
   def remove_messages
     if params[:remove]
-      @conversation.remove_messages(*@conversation.messages.find_all_by_id(*params[:remove]))
+      @conversation.remove_messages(*@conversation.messages.where(id: params[:remove]).to_a)
+      if @conversation.conversation_message_participants.where('workflow_state <> ?', 'deleted').length == 0
+        @conversation.update_attribute(:last_message_at, nil)
+      end
       render :json => conversation_json(@conversation, @current_user, session)
     end
   end
@@ -580,15 +833,18 @@ class ConversationsController < ApplicationController
   # Perform a change on a set of conversations. Operates asynchronously; use the {api:ProgressController#show progress endpoint}
   # to query the status of an operation.
   #
-  # @argument conversation_ids[] List of conversations to update. Limited to 500 conversations.
-  # @argument event The action to take on each conversation. Must be one of 'mark_as_read', 'mark_as_unread', 'star', 'unstar', 'archive', 'destroy'
+  # @argument conversation_ids[] [required, String]
+  #   List of conversations to update. Limited to 500 conversations.
+  #
+  # @argument event [Required, String, "mark_as_read"|"mark_as_unread"|"star"|"unstar"|"archive"|"destroy"]
+  #   The action to take on each conversation.
   #
   # @example_request
-  #     curl https://<canvas>/api/v1/conversations \ 
-  #       -X PUT \ 
-  #       -H 'Authorization: Bearer <token>' \ 
-  #       -d 'event=mark_as_read' \ 
-  #       -d 'conversation_ids[]=1' \ 
+  #     curl https://<canvas>/api/v1/conversations \
+  #       -X PUT \
+  #       -H 'Authorization: Bearer <token>' \
+  #       -d 'event=mark_as_read' \
+  #       -d 'conversation_ids[]=1' \
   #       -d 'conversation_ids[]=2'
   #
   # @returns Progress
@@ -618,9 +874,11 @@ class ConversationsController < ApplicationController
   # @example_response
   #   {'unread_count': '7'}
   def unread_count
-    render(:json => {'unread_count' => @current_user.unread_conversations_count.to_json})
+    # the reasons for this being a string instead of an integer are historical,
+    # but for backwards API compatibility we need to leave it a string.
+    render :json => {'unread_count' => @current_user.unread_conversations_count.to_s}
   end
-  
+
   def public_feed
     return unless get_feed_context(:only => [:user])
     @current_user = @context
@@ -640,7 +898,7 @@ class ConversationsController < ApplicationController
           @conversation_contexts[conversation.conversation.id] = feed_context_content(conversation)
         end
       end
-      @entries = @entries.sort_by{|e| e.created_at}.reverse
+      @entries = @entries.sort_by{|e| [e.created_at, e.id] }.reverse
       @entries.each do |entry|
         feed.entries << entry.to_atom(:additional_content => @conversation_contexts[entry.conversation.id])
       end
@@ -660,7 +918,7 @@ class ConversationsController < ApplicationController
     }.reject(&:blank?)
 
     content += "<hr />"
-    content += "<div>#{t('conversation_context', "From a conversation with")} "
+    content += "<div>#{ERB::Util.h(t('conversation_context', "From a conversation with"))} "
     participant_list_cutoff = 2
     if audience_names.length <= participant_list_cutoff
       content += "#{ERB::Util.h(audience_names.to_sentence)}"
@@ -670,7 +928,7 @@ class ConversationsController < ApplicationController
         :other => "and %{count} others"
       },
         :count => audience_names.length - participant_list_cutoff)
-      content += "#{ERB::Util.h(audience_names[0...participant_list_cutoff].join(", "))} #{others_string}"
+      content += "#{ERB::Util.h(audience_names[0...participant_list_cutoff].join(", "))} #{ERB::Util.h(others_string)}"
     end
 
     if !audience_context_names.empty?
@@ -699,6 +957,9 @@ class ConversationsController < ApplicationController
   end
 
   def infer_scope
+    filter_mode = (params[:filter_mode].respond_to?(:to_sym) && params[:filter_mode].to_sym) || :or
+    return render_error('filter_mode', 'invalid') if ![:or, :and].include?(filter_mode)
+
     @conversations_scope = case params[:scope]
       when 'unread'
         @current_user.conversations.unread
@@ -715,17 +976,19 @@ class ConversationsController < ApplicationController
 
     filters = param_array(:filter)
     @conversations_scope = @conversations_scope.for_masquerading_user(@real_current_user) if @real_current_user
-    @conversations_scope = @conversations_scope.tagged(*filters) if filters.present?
+    @conversations_scope = @conversations_scope.tagged(*filters, :mode => filter_mode) if filters.present?
     @set_visibility = true
   end
 
-  def infer_visibility(*conversations)
+  def infer_visibility(conversations)
+    multiple = conversations.is_a?(Enumerable) || conversations.is_a?(ActiveRecord::Relation)
+    conversations = [conversations] unless multiple
     result = Hash.new(false)
     visible_conversations = @current_user.shard.activate do
         @conversations_scope.select(:conversation_id).where(:conversation_id => conversations.map(&:conversation_id)).all
       end
     visible_conversations.each { |c| result[c.conversation_id] = true }
-    if conversations.size == 1
+    if !multiple
       result[conversations.first.conversation_id]
     else
       result
@@ -742,34 +1005,40 @@ class ConversationsController < ApplicationController
       MessageableUser.context_recipients(recipient_ids).map do |context|
         @recipients.concat @current_user.messageable_users_in_context(context)
       end
-      @recipients = @recipients.uniq_by(&:id)
+      @recipients = @recipients.uniq(&:id)
     end
   end
 
   def infer_tags
-    tags = param_array(:tags).concat(param_array(:recipients))
+    tags = param_array(:tags).concat(param_array(:recipients)).concat([params[:context_code]])
     tags = SimpleTags.normalize_tags(tags)
-    tags += tags.grep(/\Agroup_(\d+)\z/){ g = Group.find_by_id($1.to_i) and g.context.asset_string }.compact
+    tags += tags.grep(/\Agroup_(\d+)\z/){ g = Group.where(id: $1.to_i).first and g.context.asset_string }.compact
     @tags = tags.uniq
   end
 
   def get_conversation(allow_deleted = false)
     scope = @current_user.all_conversations
     scope = scope.where('message_count>0') unless allow_deleted
-    @conversation = scope.find_by_conversation_id(params[:id] || params[:conversation_id] || 0)
+    @conversation = scope.where(conversation_id: params[:id] || params[:conversation_id] || 0).first
     raise ActiveRecord::RecordNotFound unless @conversation
   end
 
   def build_message
-    Conversation.build_message(
+    Conversation.build_message(*build_message_args)
+  end
+
+  def build_message_args
+    [
       @current_user,
       params[:body],
-      :attachment_ids => params[:attachment_ids],
-      :forwarded_message_ids => params[:forwarded_message_ids],
-      :root_account_id => @domain_root_account.id,
-      :media_comment => infer_media_comment,
-      :generate_user_note => params[:user_note]
-    )
+      {
+        :attachment_ids => params[:attachment_ids],
+        :forwarded_message_ids => params[:forwarded_message_ids],
+        :root_account_id => @domain_root_account.id,
+        :media_comment => infer_media_comment,
+        :generate_user_note => value_to_boolean(params[:user_note])
+      }
+    ]
   end
 
   def infer_media_comment
@@ -790,13 +1059,17 @@ class ConversationsController < ApplicationController
     end
   end
 
-  # TODO API v2: default to true, like we do in the UI
+  # Obsolete. Forced to false until we go through and clean it up thoroughly
   def interleave_submissions
-    value_to_boolean(params[:interleave_submissions]) || !api_request?
+    false
   end
 
   def include_private_conversation_enrollments
-    value_to_boolean(params[:include_private_conversation_enrollments]) || api_request?
+    if params.has_key? :include_private_conversation_enrollments
+      value_to_boolean(params[:include_private_conversation_enrollments])
+    else
+      api_request?
+    end
   end
 
   # TODO API v2: default to false, like we do in the UI
@@ -809,4 +1082,27 @@ class ConversationsController < ApplicationController
   def param_array(key)
     Array(params[key].presence || []).compact
   end
+
+  def valid_context?(context)
+    case context
+    when nil then false
+    when Account then valid_account_context?(context)
+    when Course, Group then context.membership_for_user(@current_user) || context.grants_right?(@current_user, session, :send_messages)
+    else false
+    end
+  end
+
+  def valid_account_context?(account)
+    return false unless account.root_account?
+    return true if account.grants_right?(@current_user, session, :read_roster)
+    account.shard.activate do
+      user_sub_accounts = @current_user.associated_accounts.where(root_account_id: account).to_a
+      if user_sub_accounts.any? { |a| a.grants_right?(@current_user, session, :read_roster) }
+        return true
+      end
+    end
+
+    false
+  end
+
 end

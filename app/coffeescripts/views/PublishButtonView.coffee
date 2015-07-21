@@ -3,7 +3,9 @@ define [
   'jquery'
   'compiled/fn/preventDefault'
   'Backbone'
-], (I18n, $, preventDefault, Backbone) ->
+  'str/htmlEscape'
+  'jquery.instructure_forms'
+], (I18n, $, preventDefault, Backbone, htmlEscape) ->
 
   class PublishButton extends Backbone.View
     disabledClass: 'disabled'
@@ -16,8 +18,19 @@ define [
 
     events: {'click', 'hover'}
 
+    els:
+      'i':             '$icon'
+      '.publish-text': '$text'
+
     initialize: ->
-      @disable() unless @model.get('publishable')
+      super
+      @model?.on 'change:unpublishable', =>
+        @disable() if !@model.get('unpublishable')
+
+    setElement: ->
+      super
+      @$el.attr 'data-tooltip', ''
+      @disable() if !@model.get('unpublishable')
 
     # events
 
@@ -32,12 +45,23 @@ define [
 
     click: (event) ->
       event.preventDefault()
+      event.stopPropagation()
       return if @isDisabled()
       @keepState = true
       if @isPublish()
         @publish()
-      else if @isUnpublish()
+      else if @isUnpublish() or @isPublished()
         @unpublish()
+
+    addAriaLabel: (label) ->
+      $label = @$el.find('span.screenreader-only.accessible_label')
+      $('<span class="screenreader-only accessible_label"></span>').appendTo(@$el) unless $label.length
+
+      $label.text label
+      @$el.attr 'aria-label', label
+
+    setFocusToElement: ->
+      @$el.focus()
 
     # calling publish/unpublish on the model expects a deferred object
 
@@ -47,13 +71,23 @@ define [
         @trigger("publish")
         @enable()
         @render()
+        @setFocusToElement()
 
     unpublish: (event) ->
       @renderUnpublishing()
-      @model.unpublish().always =>
+      @model.unpublish()
+      .done =>
         @trigger("unpublish")
-        @enable()
+        @disable()
         @render()
+        @setFocusToElement()
+      .fail (error) =>
+        errors = JSON.parse(error.responseText)['errors']
+        $.flashError errors.published[0].message
+        @model.set 'unpublishable', true
+        @disable()
+        @renderPublished()
+        @setFocusToElement()
 
     # state
 
@@ -77,10 +111,20 @@ define [
 
     reset: ->
       @$el.removeClass "#{@publishClass} #{@publishedClass} #{@unpublishClass}"
+      @$icon.removeClass 'icon-publish icon-unpublish icon-unpublished'
+      @$el.removeAttr 'aria-label'
 
     # render
 
     render: ->
+      @$el.attr 'role', 'button'
+      @$el.attr 'tabindex', '0'
+      @$el.html '<i></i><span class="publish-text"></span>'
+      @cacheEls()
+
+      # don't read text of button with screenreader
+      @$text.attr 'tabindex', '-1'
+
       if @model.get('published')
         @renderPublished()
       else
@@ -88,35 +132,62 @@ define [
       @
 
     renderPublish: ->
-      @reset()
-      @$el.addClass @publishClass
-      text = I18n.t('buttons.publish', 'Publish')
-      @$el.attr 'title', text
-      @$el.html "<i class='icon-unpublished'></i><span class='publish-text'>&nbsp;#{text}</span>"
+      @renderState
+        text:        I18n.t 'buttons.publish', 'Publish'
+        label:       I18n.t 'buttons.publish_desc', 'Unpublished. Click to publish.'
+        buttonClass: @publishClass
+        iconClass:   'icon-unpublished'
 
     renderPublished: ->
-      @reset()
-      text = I18n.t('buttons.published', 'Published')
-      @$el.addClass @publishedClass
-      @$el.attr 'title', text
-      @$el.html "<i class='icon-publish'></i><span class='publish-text'>&nbsp;#{text}</span>"
+      @renderState
+        text:        I18n.t 'buttons.published', 'Published'
+        label:       I18n.t 'buttons.published_desc', 'Published. Click to unpublish.'
+        buttonClass: @publishedClass
+        iconClass:   'icon-publish'
 
     renderUnpublish: ->
-      @reset()
-      text = I18n.t('buttons.unpublish', 'Unpublish')
-      @$el.addClass @unpublishClass
-      @$el.attr 'title', text
-      @$el.html "<i class='icon-unpublish'></i><span class='publish-text'>&nbsp;#{text}</span>"
+      text = I18n.t 'buttons.unpublish', 'Unpublish'
+      @renderState
+        text:        text
+        buttonClass: @unpublishClass
+        iconClass:   'icon-unpublish'
 
     renderPublishing: ->
       @disable()
-      text = I18n.t('buttons.publishing', 'Publishing...')
-      @$el.attr 'title', text
-      @$el.html "<i class='icon-publish'></i><span class='publish-text'>&nbsp;#{text}</span>"
+      text = I18n.t 'buttons.publishing', 'Publishing...'
+      @renderState
+        text:        text
+        buttonClass: @publishClass
+        iconClass:   'icon-publish'
 
     renderUnpublishing: ->
       @disable()
-      text = I18n.t('buttons.unpublishing', 'Unpublishing...')
-      @$el.attr 'title', text
-      @$el.html "<i class='icon-unpublished'></i><span class='publish-text'>&nbsp;#{text}</span>"
+      text = I18n.t 'buttons.unpublishing', 'Unpublishing...'
+      @renderState
+        text:        text
+        buttonClass: @unpublishClass
+        iconClass:   'icon-unpublished'
 
+    renderState: (options) ->
+      @reset()
+      @$el.addClass options.buttonClass
+      @$el.attr 'aria-pressed', options.buttonClass is @publishedClass
+      @$icon.addClass options.iconClass
+
+      @$text.html "&nbsp;#{htmlEscape(options.text)}"
+
+      # unpublishable
+      if !@model.get('unpublishable')? or @model.get('unpublishable')
+        @enable()
+        @$el.attr 'title', options.text
+
+        # label for screen readers
+        if options.label
+          @addAriaLabel(options.label)
+
+      # disabled
+      else
+        @disable()
+        @$el.attr 'aria-disabled', true
+        @$el.attr 'title', @model.disabledMessage()
+        @addAriaLabel(@model.disabledMessage())

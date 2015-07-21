@@ -27,24 +27,24 @@ describe 'DisableOpenRegistrationForDelegatedAuth' do
       @ldap_account = Account.create!
       @normal_account = Account.create!
       @all_accounts = [@cas_account, @saml_account, @ldap_account, @normal_account]
-      @cas_account.account_authorization_configs.create!(:auth_type => 'cas')
-      @saml_account.account_authorization_configs.create!(:auth_type => 'saml')
-      @ldap_account.account_authorization_configs.create!(:auth_type => 'ldap')
+      @cas_account.authentication_providers.create!(:auth_type => 'cas')
+      @saml_account.authentication_providers.create!(:auth_type => 'saml')
+      @ldap_account.authentication_providers.create!(:auth_type => 'ldap')
       @all_accounts.each do |account|
         # have to bypass the settings= logic for weeding these out since they don't
         # apply
         account.write_attribute(:settings, { :open_registration => true })
         account.save!
-        account.open_registration?.should be_true
+        expect(account.open_registration?).to be_truthy
       end
 
       DisableOpenRegistrationForDelegatedAuth.up
 
       @all_accounts.each(&:reload)
-      @cas_account.open_registration?.should be_false
-      @saml_account.open_registration?.should be_false
-      @ldap_account.open_registration?.should be_true
-      @normal_account.open_registration?.should be_true
+      expect(@cas_account.open_registration?).to be_falsey
+      expect(@saml_account.open_registration?).to be_falsey
+      expect(@ldap_account.open_registration?).to be_truthy
+      expect(@normal_account.open_registration?).to be_truthy
     end
   end
 end

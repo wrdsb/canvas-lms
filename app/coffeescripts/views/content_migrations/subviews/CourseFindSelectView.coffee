@@ -2,21 +2,24 @@ define [
   'jquery'
   'Backbone'
   'underscore'
+  'i18n!content_migrations'
   'jst/content_migrations/subviews/CourseFindSelect'
+  'jst/courses/autocomplete_item'
   'jquery.ajaxJSON'
   'jquery.disableWhileLoading'
-], ($, Backbone, _, template) -> 
+], ($, Backbone, _, I18n, template, autocompleteItemTemplate) ->
   class CourseFindSelectView extends Backbone.View
-    @optionProperty 'current_user_id'
+    @optionProperty 'current_user_id', 'show_select'
     template: template
 
     els: 
       '#courseSearchField'   : '$courseSearchField'
       '#courseSelect'        : '$courseSelect'
+      '#courseSelectWarning' : '$selectWarning'
 
     events: 
       'change #courseSelect' : 'updateSearch'
-      'change [name=include_completed_courses]' : 'toggleConcludedCourses'
+      'change #include_completed_courses' : 'toggleConcludedCourses'
 
     render: ->
       super
@@ -31,11 +34,23 @@ define [
       @$courseSearchField.autocomplete 
         source: @manageableCourseUrl()
         select: @updateSelect
+      @$courseSearchField.data('ui-autocomplete')._renderItem = (ul, item) ->
+        $(autocompleteItemTemplate(item)).appendTo(ul)
+
+      # Accessiblity Hack. If you find a better solution please fix this. This makes it so the whole form isn't read
+      # by the screen reader every time a user selects an auto completed item.
+      $converterDiv = $('#converter')
+      @$courseSearchField.on 'focus', -> $converterDiv.attr('aria-atomic', false)
+      @$courseSearchField.on 'blur', -> $converterDiv.attr('aria-atomic', true)
+      @$courseSelect.on 'focus', -> $converterDiv.attr('aria-atomic', false)
+      @$courseSelect.on 'blur', -> $converterDiv.attr('aria-atomic', true)
+      ## hack finished ##
 
     toJSON: -> 
       json = super
       json.terms = @coursesByTerms
       json.include_concluded = @includeConcludedCourses
+      json.show_select = @options.show_select
       json
 
     # Grab a list of courses from the server via the managebleCourseUrl. Disable
@@ -70,7 +85,7 @@ define [
 
     # Build a list of courses that our template and autocomplete can use
     # objects look like
-    #   {label: 'Plant Science', value: 'Plant Science', id: 42}
+    #   {label: 'Plant Science', value: 'Plant Science', id: '42'}
     # @api private
 
     autocompleteCourses: ->
@@ -85,7 +100,7 @@ define [
 
     updateSelect: (event, ui) => 
       @setSourceCourseId ui.item.id
-      @$courseSelect.val ui.item.id
+      @$courseSelect.val ui.item.id if @$courseSelect.length
 
     # After selecting a course via the dropdown menu, update the search
     # field to keep the inputs in sync. Also set the source course id
@@ -93,7 +108,7 @@ define [
     # @api private
 
     updateSearch: (event) => 
-      value = parseInt(event.target.value, 10)
+      value = event.target.value && String(event.target.value)
       @setSourceCourseId value
 
       courses = @autocompleteCourses()
@@ -105,6 +120,11 @@ define [
     # @api private
 
     setSourceCourseId: (id) ->
+      if id == ENV.COURSE_ID?.toString()
+        @$selectWarning.show()
+      else
+        @$selectWarning.hide()
+
       @model.set('settings', {source_course_id: id})
       if course = _.find(@courses, (c) -> c.id == id)
         @trigger 'course_changed', course
@@ -125,7 +145,6 @@ define [
       unless settings?.source_course_id
         errors.courseSearchField = [
           type: "required"
-          message: "You must select a course to copy content from"
+          message: I18n.t("You must select a course to copy content from")
         ]
-
       errors

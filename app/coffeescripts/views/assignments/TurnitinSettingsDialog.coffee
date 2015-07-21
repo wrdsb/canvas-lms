@@ -3,15 +3,16 @@ define [
   'Backbone'
   'jquery'
   'underscore'
+  'str/htmlEscape'
   'compiled/jquery/fixDialogButtons'
-], (turnitinSettingsDialog, { View }, $, _) ->
+], (turnitinSettingsDialog, { View }, $, _, htmlEscape) ->
 
   class TurnitinSettingsDialog extends View
 
     tagName: 'div'
 
     EXCLUDE_SMALL_MATCHES_OPTIONS = '.js-exclude-small-matches-options'
-    EXCLUDE_SMALL_MATCHES = '[name="exclude_small_matches"]'
+    EXCLUDE_SMALL_MATCHES = '#exclude_small_matches'
     EXCLUDE_SMALL_MATCHES_TYPE = '[name="exclude_small_matches_type"]'
 
     events: do ->
@@ -37,20 +38,20 @@ define [
       json = super
       _.extend json,
         wordsInput: """
-          <input class="span1" id="exclude_small_matches_words_value" name="words" value="#{json.words}" type="text"/>
+          <input class="span1" id="exclude_small_matches_words_value" name="words" value="#{htmlEscape json.words}" type="text"/>
         """
         percentInput: """
-          <input class="span1" id="exclude_small_matches_percent_value" name="percent" value="#{json.percent}" type="text"/>
+          <input class="span1" id="exclude_small_matches_percent_value" name="percent" value="#{htmlEscape json.percent}" type="text"/>
         """
 
     renderEl: =>
-      @$el.html(turnitinSettingsDialog(@toJSON()))
+      html = turnitinSettingsDialog(@toJSON())
+      @$el.html(html)
       @$el.dialog({width: 'auto', modal: true}).fixDialogButtons()
 
     getFormValues: =>
       values = @$el.find('form').toJSON()
       if @$excludeSmallMatches.prop 'checked'
-        values.exclude_small_matches_type = @$excludeSmallMatchesType.val()
         if values.exclude_small_matches_type is 'words'
           values.exclude_small_matches_value = values.words
         else

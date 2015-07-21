@@ -24,14 +24,15 @@ module StreamItemsHelper
   end
 
   class ContextPresenter
-    attr_accessor :id, :type, :name, :linked_to
+    attr_accessor :id, :type, :name, :linked_to, :time_zone
   end
 
   def categorize_stream_items(stream_items, user = @current_user)
-    supported_categories = %w(Announcement Conversation Assignment DiscussionTopic)
+    supported_categories = %w(Announcement Conversation Assignment DiscussionTopic AssessmentRequest)
     categorized_items = {}
+    return categorized_items unless stream_items.present? # if we have no items (possibly because we have no user), don't try to activate the user's shard
     supported_categories.each { |category| categorized_items[category] = [] }
-    
+
     stream_items.each do |item|
       category = item.data.class.name
       category = category_for_message(item.data.notification_name) if category == "Message"
@@ -39,18 +40,15 @@ module StreamItemsHelper
       next unless supported_categories.include?(category)
 
       if category == "Conversation"
-        participant = user.shard.activate do
-          # this needs to be queried relative to the user
-          user.conversation_participant(item.asset_id)
-        end
+        participant = user.conversation_participant(item.asset_id)
+
         next if participant.nil? || participant.last_message.nil? || participant.last_author?
-        item.data.write_attribute(:last_message, participant.last_message)
-        item.data.write_attribute(:last_author, participant.last_message.author)
+        item.participant = participant
 
         # because we're cheating and just checking unread here instead of using
         # the workflow_state on the stream_item_instance, that workflow_state
         # may be out of sync with the underlying conversation.
-        item.data.write_attribute(:unread, participant.unread?)
+        item.unread = participant.unread?
       elsif category == "Assignment"
         # TODO: this handles an edge case for old stream items where their
         # context code was getting set to "assignment_x" instead of "course_y".
@@ -58,38 +56,45 @@ module StreamItemsHelper
         # - we switch to direct send_to_stream for assignments
         # - no more stream items have this bad data in production
         next if item.context_type == "Assignment"
+      elsif category == "AssessmentRequest"
+        next unless item.data.asset.assignment.published?
       end
 
       if ["DiscussionTopic","Announcement"].include? category
         item.data.reload
         next if item.data.try(:visible_for?, user) == false
       end
-      
-      categorized_items[category] << generate_presenter(category, item)
+
+      categorized_items[category] << generate_presenter(category, item, user)
     end
     categorized_items
   end
 
-  def generate_presenter(category, item)
+  def generate_presenter(category, item, user = @current_user)
     presenter = StreamItemPresenter.new
-    presenter.stream_item_id = item.id
+    # need to store stream item id relative to the user's shard, since we'll
+    # use it later to look up the user's StreamItemInstances for deletion
+    presenter.stream_item_id = user.shard.activate{ item.id }
     presenter.updated_at = item.data.respond_to?(:updated_at) ? item.data.updated_at : nil
     presenter.updated_at ||= item.updated_at
-    presenter.unread = item.data.unread
+    presenter.unread = item.unread
     presenter.path = extract_path(category, item)
     presenter.context = extract_context(category, item)
-    presenter.summary = extract_summary(category, item)
+    presenter.summary = extract_summary(category, item, user)
     presenter
   end
 
   def extract_path(category, item)
     case category
     when "Announcement", "DiscussionTopic"
-      polymorphic_path([item.context_type.underscore, category.underscore], "#{item.context_type.underscore}_id" => item.context_id, :id => item.asset_id)
+      polymorphic_path([item.context_type.underscore, category.underscore], "#{item.context_type.underscore}_id" => Shard.short_id_for(item.context_id), :id => Shard.short_id_for(item.asset_id))
     when "Conversation"
-      conversation_path(item.asset_id)
+      conversation_path(Shard.short_id_for(item.asset_id))
     when "Assignment"
-      polymorphic_path([item.context_type.underscore, category.underscore], "#{item.context_type.underscore}_id" => item.context_id, :id => item.data.asset_context_id)
+      polymorphic_path([item.context_type.underscore, category.underscore], "#{item.context_type.underscore}_id" => Shard.short_id_for(item.context_id), :id => Shard.short_id_for(item.data.asset_context_id))
+    when "AssessmentRequest"
+      submission = item.data.assessor_asset
+      course_assignment_submission_path(item.context_id, submission.assignment_id, Shard.short_id_for(item.data.user_id))
     else
       nil
     end
@@ -103,25 +108,34 @@ module StreamItemsHelper
       context.type = item.context_type
       context.id = item.context_id
       context.name = asset.context_short_name
-      context.linked_to = polymorphic_path([context.type.underscore, category.underscore.pluralize], "#{context.type.underscore}_id" => context.id)
+      context.linked_to = polymorphic_path([context.type.underscore, category.underscore.pluralize], "#{context.type.underscore}_id" => Shard.short_id_for(context.id))
     when "Conversation"
       context.type = "User"
-      context.id = asset.last_author.id
-      context.name = asset.last_author.short_name
-      context.linked_to = user_path(asset.last_author.id)
+      last_author = item.participant.last_message.author
+      context.id = last_author.id
+      context.name = last_author.short_name
+      context.linked_to = user_path(last_author)
+    when "AssessmentRequest"
+      context.type = item.context_type
+      context.id = item.context_id
+      context.name = asset.context_short_name
     end
+    context.time_zone = item.context.try(:time_zone)
     context
   end
 
-  def extract_summary(category, item)
+  def extract_summary(category, item, user = @current_user)
     asset = item.data
     case category
     when "Announcement", "DiscussionTopic"
       asset.title
     when "Conversation"
-      truncate_text(asset.last_message.body, :max_length => 250)
+      CanvasTextHelper.truncate_text(item.participant.last_message.body, :max_length => 250)
     when "Assignment"
       asset.subject
+    when "AssessmentRequest"
+      # TODO I18N should use placeholders, not concatenation
+      asset.asset.assignment.title + " " + I18n.t('for', "for") + " " + assessment_author_name(asset, user)
     else
       nil
     end
@@ -144,5 +158,14 @@ module StreamItemsHelper
       "Ignore"
     end
   end
-  private :category_for_message
+
+  def assessment_author_name(asset, user = @current_user)
+    if can_do(asset, user, :read_assessment_user)
+      asset.asset.user.name
+    else
+      I18n.t(:anonymous_user, "Anonymous User")
+    end
+  end
+
+  private :category_for_message, :assessment_author_name
 end

@@ -1,81 +1,39 @@
 define([
   'i18n!account_authorization_configs',
+  'str/htmlEscape',
+  'react',
+  'jsx/authentication_providers/AuthTypePicker',
+  'authentication_providers',
   'jquery' /* $ */,
   'jquery.instructure_forms' /* formSubmit */,
   'jquery.keycodes' /* keycodes */,
   'jquery.loadingImg' /* loadingImage */
-], function(I18n, $) {
+], function(I18n, htmlEscape, React, AuthTypePicker, authenticationProviders, $) {
 
-  var new_type = null;
-  
-  $(".edit_auth_link").click(function(event) {
-    event.preventDefault();
-    $("#auth_form").addClass('editing').find(":text:first").focus().select();
+  var Picker = React.createFactory(AuthTypePicker);
+  var selectorNode = document.getElementById("add-authentication-provider");
+  var authTypeOptions = JSON.parse(selectorNode.getAttribute("data-options"));
+  var authTypePicker = Picker({
+    authTypes: authTypeOptions,
+    onChange: authenticationProviders.changedAuthType
   });
-  
-  $("#add_auth_select").change(function(event) {
-      event.preventDefault();
-      $("#auth_form").find(".cancel_button:first").click();
-      new_type = $(this).find(":selected").val();
-      $(".active").each(function(i){$(this).removeClass('active');})
-      if(new_type == "" || new_type == null){
-          new_type = null;
-      }
-      else{
-          $("#" + new_type + "_div").addClass('active');
-          $("#" + new_type + "_form").attr('id', 'auth_form');
-          $("#no_auth").css('display', 'none');
-          $("#auth_form").addClass('editing').find(":text:first").focus().select();
-      }
-  });
-  
-  $(".auth_type").each(function(i){
-      $(this).find(".cancel_button").click(function() {
-        $("#auth_form").removeClass('editing');
-          if ( $('#no_auth').length && new_type ){
-              $("#no_auth").css('display', 'inline');
-              $("#" + new_type + "_div").removeClass('active');
-              $("#auth_form").attr('id', new_type + '_form');
-              new_type = null;
-          }
-      }).end().find(":text").keycodes('esc', function() {
-        $(this).parents("#auth_form").find(".cancel_button:first").click();
-      });
-      
-      $(this).formSubmit({
-        beforeSubmit: function() {
-         $(this).loadingImage();
-        },
-        success: function(data) {
-          window.location.reload();
-        }
-      });
-  });
+  React.render(authTypePicker, selectorNode);
 
-  $("#discovery_url_form").formSubmit({
-    success: function(data) {
-      window.location.reload();
+  $('.parent_reg_warning').click(function() {
+    var parent_reg_selected = $('#parent_reg_selected').attr('data-parent-reg-selected');
+    if($(this).is(":checked") && parent_reg_selected == 'true') {
+      msg = I18n.t("Another configuration is currently selected.  Selecting this configuration will deselect the other.");
+      $('.parent_warning_message').append(htmlEscape(msg));
+      $.screenReaderFlashMessage(msg);
+      $('.parent_form_message').addClass('ic-Form-message ic-Form-message--warning');
+      $('.parent_form_message_layout').addClass('ic-Form-message__Layout');
+      $('.parent_icon_warning').addClass('icon-warning');
+    }
+    else {
+      $('.parent_warning_message').empty();
+      $('.parent_form_message').removeClass('ic-Form-message ic-Form-message--warning');
+      $('.parent_form_message_layout').removeClass('ic-Form-message__Layout');
+      $('.parent_icon_warning').removeClass('icon-warning');
     }
   });
-
-  $('#discovery_url_config .delete_url').click(function(){
-    $.ajaxJSON( $(this).data('url'), "DELETE", {}, function(){
-      $('#discovery_url_input').val("");
-      $('#discovery_url_display').html(I18n.t('no_discovery_url', "None set"));
-    });
-  });
-
-  $(".add_secondary_ldap_link").click(function(event) {
-    event.preventDefault();
-    $(".ldap_secondary").show();
-    $("#secondary_ldap_config_disabled").val("0");
-    $(this).hide();
-  });
-  
-  $(".remove_secondary_ldap_link").click(function(event) {
-    event.preventDefault();
-    $(".ldap_secondary").hide();
-    $("#secondary_ldap_config_disabled").val("1");
-    $(".add_secondary_ldap_link").show();
-  });
-});  
+});

@@ -16,6 +16,8 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
+require 'securerandom'
+
 class EportfolioCategoriesController < ApplicationController
   include EportfolioPage
   
@@ -23,6 +25,7 @@ class EportfolioCategoriesController < ApplicationController
     @portfolio = Eportfolio.find(params[:eportfolio_id])
     redirect_to eportfolio_url(@portfolio)
   end
+
   def create
     @portfolio = Eportfolio.find(params[:eportfolio_id])
     if authorized_action(@portfolio, @current_user, :update)
@@ -32,9 +35,9 @@ class EportfolioCategoriesController < ApplicationController
         if @category.save
           @portfolio.eportfolio_entries.create(:eportfolio_category => @category, :name => t(:default_name, "New Page"), :allow_comments => true, :show_comments => :true)
           format.html { redirect_to eportfolio_category_url(@portfolio, @category) }
-          format.json { render :json => @category.to_json }
+          format.json { render :json => @category }
         else
-          format.json { render :json => @category.errors.to_json }
+          format.json { render :json => @category.errors }
         end
       end
     end
@@ -47,8 +50,9 @@ class EportfolioCategoriesController < ApplicationController
       respond_to do |format|
         if @category.update_attributes(params[:eportfolio_category])
           format.html { redirect_to eportfolio_category_url(@portfolio, @category) }
-          format.json { render :json => @category.to_json }
+          format.json { render :json => @category }
         else
+          format.json { render :json => @category.errors }
         end
       end
     end
@@ -60,19 +64,19 @@ class EportfolioCategoriesController < ApplicationController
       if params[:verifier] == @portfolio.uuid
         session[:eportfolio_ids] ||= []
         session[:eportfolio_ids] << @portfolio.id
-        session[:session_affects_permissions] = true
+        session[:permissions_key] = SecureRandom.uuid
       end
       if authorized_action(@portfolio, @current_user, :read)
         if params[:id]
           @category = @portfolio.eportfolio_categories.find(params[:id])
         elsif params[:category_name]
-          @category = @portfolio.eportfolio_categories.find_by_slug(params[:category_name]) or raise ActiveRecord::RecordNotFound
+          @category = @portfolio.eportfolio_categories.where(slug: params[:category_name]).first!
         end
         @page = @category.eportfolio_entries.first
         @page ||= @portfolio.eportfolio_entries.create(:eportfolio_category => @category, :allow_comments => true, :show_comments => true, :name => t(:default_name, "New Page")) if @portfolio.grants_right?(@current_user, session, :update)
         raise ActiveRecord::RecordNotFound if !@page
         eportfolio_page_attributes
-        render :template => "eportfolios/show"
+        render "eportfolios/show"
       end
     rescue ActiveRecord::RecordNotFound
       flash[:notice] = t('errors.missing_page', "Couldn't find that page")
@@ -87,7 +91,7 @@ class EportfolioCategoriesController < ApplicationController
       respond_to do |format|
         if @category.destroy
           format.html { redirect_to eportfolio_url(@portfolio) }
-          format.json { render :json => @category.to_json }
+          format.json { render :json => @category }
         else
         end
       end

@@ -34,8 +34,11 @@ module Guard
     module Formatter
       class << self
         def info(message, options = { }); ::Guard::UI.info(message, options); end
+
         def error(message, options = { }); ::Guard::UI.error(color(message, ';31'), options); end
+
         def success(message, options = { }); ::Guard::UI.info(color(message, ';32'), options); end
+
         def notify(message, options = { }); ::Guard::Notifier.notify(message, options); end
         private
         def color(text, color_code); ::Guard::UI.send(:color_enabled?) ? "\e[0#{ color_code }m#{ text }\e[0m" : text; end
@@ -89,7 +92,7 @@ module Guard
           if Canvas::CoffeeScript.coffee_script_binary_is_available?
             Parallel.each(directories.map, :in_threads => Parallel.processor_count) do |(directory, scripts)|
               FileUtils.mkdir_p(File.expand_path(directory)) if !File.directory?(directory) && !options[:noop]
-              system('coffee', '-m', '-c', '-o', directory, *scripts)
+              system('coffee', '-c', '-o', directory, *scripts)
               if $?.exitstatus != 0
                 Formatter.error("Unable to compile coffeescripts in #{directory}")
               else
@@ -207,7 +210,7 @@ module Guard
     def run_on_deletion(paths)
       clean(paths).each do |file|
         javascript = file.gsub(/(js\.coffee|coffee)$/, 'js')
-        File.remove(javascript) if File.exists?(javascript)
+        File.remove(javascript) if File.exist?(javascript)
       end
     end
 
@@ -223,7 +226,7 @@ module Guard
     def clean(paths)
       paths.uniq!
       paths.compact!
-      paths.select { |p| p =~ /.coffee$/ && File.exists?(p) }
+      paths.select { |p| p =~ /.coffee$/ && File.exist?(p) }
     end
 
   end

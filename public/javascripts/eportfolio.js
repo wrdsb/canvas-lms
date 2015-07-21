@@ -21,13 +21,14 @@
 // they'll create elements with the same class names we're using to
 // find endpoints for updating settings and content.  However, since
 // only the portfolio's owner can set this content, it seems like
-// the worst they can do is override endpoint urls for eportfolio 
-// settings on their own personal eportfolio, they can't 
+// the worst they can do is override endpoint urls for eportfolio
+// settings on their own personal eportfolio, they can't
 // affect anyone else
 
 define([
   'i18n!eportfolio',
   'jquery' /* $ */,
+  'compiled/userSettings',
   'jquery.ajaxJSON' /* ajaxJSON */,
   'jquery.inst_tree' /* instTree */,
   'jquery.instructure_forms' /* formSubmit, getFormData, formErrors, errorBox */,
@@ -42,11 +43,21 @@ define([
   'vendor/jquery.scrollTo' /* /\.scrollTo/ */,
   'jqueryui/progressbar' /* /\.progressbar/ */,
   'jqueryui/sortable' /* /\.sortable/ */
-], function(I18n, $) {
+], function(I18n, $, userSettings) {
+
+  var ePortfolioValidations = {
+    object_name: 'eportfolio',
+    property_validations: {
+      'name': function(value){
+        if (!value || value.trim() == '') { return I18n.t("errors.name_required", "Name is required")}
+        if (value && value.length > 255) { return I18n.t("errors.name_too_long", "Name is too long")}
+      }
+    }
+  };
 
   function ePortfolioFormData() {
     var data = $("#edit_page_form").getFormData({
-      object_name: "eportfolio_entry", 
+      object_name: "eportfolio_entry",
       values: ['eportfolio_entry[name]', 'eportfolio_entry[allow_comments]', 'eportfolio_entry[show_comments]']
     });
     var idx = 0;
@@ -81,11 +92,30 @@ define([
         title: I18n.t('eportfolio_settings', "ePortfolio Settings")
       }).fixDialogButtons();
     });
+    // Add ePortfolio related
+    $(".add_eportfolio_link").click(function(event) {
+      event.preventDefault();
+      $("#whats_an_eportfolio").slideToggle();
+      $("#add_eportfolio_form").slideToggle(function() {
+        $(this).find(":text:first").focus().select();
+      });
+    });
+    $("#add_eportfolio_form .cancel_button").click(function() {
+      $("#add_eportfolio_form").slideToggle();
+      $("#whats_an_eportfolio").slideToggle();
+    });
+    $('#add_eportfolio_form').submit(function(){
+      var $this = $(this);
+      var result = $this.validateForm(ePortfolioValidations);
+      if(!result) {
+        return false;
+      }
+    });
+    // Edit ePortfolio related
     $("#edit_eportfolio_form .cancel_button").click(function(event) {
       $("#edit_eportfolio_form").dialog('close');
     });
-    $("#edit_eportfolio_form").formSubmit({
-      object_name: 'eportfolio', 
+    $("#edit_eportfolio_form").formSubmit($.extend(ePortfolioValidations, {
       beforeSubmit: function(data) {
         $(this).loadingImage();
       },
@@ -93,7 +123,7 @@ define([
         $(this).loadingImage('remove');
         $(this).dialog('close');
       }
-    });
+    }));
     $(".edit_content_link").click(function(event) {
       event.preventDefault();
       $(".edit_content_link_holder").hide();
@@ -109,7 +139,7 @@ define([
         sectionData.section_content = $.trim(sectionData.section_content);
         var section_type = sectionData.section_type;
         var edit_type = "edit_" + section_type + "_content";
-        
+
         var $edit = $("#edit_content_templates ." + edit_type).clone(true);
         $section.append($edit.show());
         if(edit_type == "edit_html_content") {
@@ -167,10 +197,10 @@ define([
           var section_type = $(this).getTemplateData({textValues: ['section_type']}).section_type;
           if(section_type == "rich_text" || section_type == "html") {
             var code = $(this).find(".edit_section").val();
-            if(section_type == "rich_text") { 
+            if(section_type == "rich_text") {
               code = $(this).find(".edit_section").editorBox('get_code');
             }
-            $(this).find(".section_content").html(code);
+            $(this).find(".section_content").html($.raw(code));
           } else if(!$(this).hasClass('read_only')) {
             $(this).remove();
           }
@@ -199,6 +229,8 @@ define([
     $("#edit_page_form .switch_views_link").click(function(event) {
       event.preventDefault();
       $("#edit_page_content").editorBox('toggle');
+      //  todo: replace .andSelf with .addBack when JQuery is upgraded.
+      $(this).siblings(".switch_views_link").andSelf().toggle();
     });
     $("#edit_page_sidebar .add_content_link").click(function(event) {
       event.preventDefault();
@@ -221,7 +253,7 @@ define([
       }
       var edit_type = "edit_" + section_type + "_content";
       $section.fillTemplateData({
-        data: {section_type: section_type, section_type_name: section_type_name} 
+        data: {section_type: section_type, section_type_name: section_type_name}
       });
       var $edit = $("#edit_content_templates ." + edit_type).clone(true);
       $section.append($edit.show());
@@ -293,11 +325,11 @@ define([
       var $section = $(this).parents(".section")
       var $message = $("#edit_content_templates").find(".uploading_file").clone();
       var $upload = $(this).parents(".section").find(".file_upload");
-      
+
       if(!$upload.val() && $section.find(".file_list .leaf.active").length === 0) {
         return;
       }
-      
+
       $message.fillTemplateData({
         data: {file_name: $upload.val()}
       });
@@ -385,7 +417,7 @@ define([
       },
       error: function(data) {
         var $section = $(this).data("section");
-        $section.find(".uploading_file").html(I18n.t('errors.upload_failed', "Upload Failed."));
+        $section.find(".uploading_file").text(I18n.t('errors.upload_failed', "Upload Failed."));
         $section.addClass('failed');
         $section.formErrors(data.errors || data);
       }
@@ -452,7 +484,7 @@ define([
       });
     }).triggerHandler('change');
     $.scrollSidebar();
-    
+
     $(".delete_comment_link").click(function(event) {
       event.preventDefault();
       $(this).parents(".comment").confirmDelete({
@@ -490,7 +522,7 @@ define([
         $(this).addClass('active');
         if($(this).hasClass('file')) {
           var id = $(this).getTemplateData({textValues: ['id']}).id;
-          
+
         }
       }
     });
@@ -513,7 +545,6 @@ define([
   function saveObject($obj, type) {
     var isSaving = $obj.data('event_pending');
     if(isSaving || $obj.length === 0) { return; }
-    $obj.data('event_pending', true);
     var method = "PUT";
     var url = $obj.find(".rename_" + type + "_url").attr('href');
     if($obj.attr('id') == type + '_new') {
@@ -538,6 +569,7 @@ define([
     if(method == "POST") {
       $obj.attr('id', type + '_saving');
     }
+    $obj.data('event_pending', true);
     $obj.addClass('event_pending');
     $.ajaxJSON(url, method, data, function(data) {
       $obj.removeClass('event_pending');
@@ -556,7 +588,27 @@ define([
       });
       $obj.data('event_pending', false);
       countObjects(type);
-    });
+    },
+    // error callback
+    function(data, xhr, textStatus, errorThrown){
+      $obj.removeClass('event_pending');
+      $obj.data('event_pending', false);
+      var name_message = I18n.t("errors.section_name_invalid", "Section name is not valid")
+      if (xhr['name'] && xhr['name'].length > 0 && xhr['name'][0]['message'] == 'too_long') {
+        name_message = I18n.t("errors.section_name_too_long", "Section name is too long");
+      }
+      if ($obj.hasClass('unsaved')) {
+        alert(name_message);
+        $obj.remove();
+      }
+      else {
+        // put back in "edit" mode
+        $obj.find('.edit_section_link').click();
+        $obj.find('#section_name').errorBox(name_message).css('z-index', 20)
+      }
+    },
+    // options
+    {skipDefaultError: true});
     return true;
   }
   function editObject($obj, type) {
@@ -581,7 +633,7 @@ define([
       $("#" + type + "_list .remove_page_link").css('display', '');
     } else {
       $("#" + type + "_list .remove_page_link").hide();
-    }  
+    }
   }
   $(document).ready(function() {
     countObjects('page');
@@ -653,7 +705,7 @@ define([
             var valid_ids = [];
             for(var idx in ids) {
               var id = ids[idx];
-              id = parseInt(id.substring(5));
+              id = id.substring(5);
               if(!isNaN(id)) { valid_ids.push(id); }
             }
             var order = valid_ids.join(",");
@@ -722,6 +774,79 @@ define([
     });
   });
 
+  var $wizard_box = $("#wizard_box");
+
+  function setWizardSpacerBoxDisplay(action){
+    $("#wizard_spacer_box").height($wizard_box.height() || 0).showIf(action === 'show');
+  }
+
+  var pathname = window.location.pathname;
+  $(".close_wizard_link").click(function(event) {
+    event.preventDefault();
+    userSettings.set('hide_wizard_' + pathname, true);
+
+    $wizard_box.slideUp('fast', function() {
+      $(".wizard_popup_link").slideDown('fast');
+      $('.wizard_popup_link').focus();
+      setWizardSpacerBoxDisplay('hide');
+    });
+
+  });
+
+  $(".wizard_popup_link").click(function(event) {
+    event.preventDefault();
+    $(".wizard_popup_link").slideUp('fast');
+    $wizard_box.slideDown('fast', function() {
+      $wizard_box.triggerHandler('wizard_opened');
+      $wizard_box.focus();
+      $([document, window]).triggerHandler('scroll');
+    });
+  });
+
+  $wizard_box.ifExists(function($wizard_box){
+
+    $wizard_box.bind('wizard_opened', function() {
+      var $wizard_options = $wizard_box.find(".wizard_options"),
+          height = $wizard_options.height();
+      $wizard_options.height(height);
+      $wizard_box.find(".wizard_details").css({
+        maxHeight: height - 5,
+        overflow: 'auto'
+      });
+      setWizardSpacerBoxDisplay('show');
+    });
+
+    $wizard_box.find(".wizard_options_list .option").click(function(event) {
+      var $this = $(this);
+      var $a = $(event.target).closest("a");
+      if($a.length > 0 && $a.attr('href') != "#") { return; }
+      event.preventDefault();
+      $this.parents(".wizard_options_list").find(".option.selected").removeClass('selected');
+      $this.addClass('selected');
+      var $details = $wizard_box.find(".wizard_details");
+      var data = $this.getTemplateData({textValues: ['header']});
+      data.link = data.header;
+      $details.fillTemplateData({
+        data: data
+      });
+      $details.find(".details").remove();
+      $details.find(".header").after($this.find(".details").clone(true).show());
+      var url = $this.find(".header").attr('href');
+      if(url != "#") {
+        $details.find(".link").show().attr('href', url);
+      } else {
+        $details.find(".link").hide();
+      }
+      $details.hide().fadeIn('fast');
+    });
+    setTimeout(function() {
+      if(!userSettings.get('hide_wizard_' + pathname)) {
+        $(".wizard_popup_link.auto_open:first").click();
+      }
+    }, 500);
+  });
+
+
   $(document).ready(function() {
     countObjects('section');
     $(document).bind('section_deleted', function(event, data) {
@@ -784,7 +909,7 @@ define([
             var valid_ids = [];
             for(var idx in ids) {
               var id = ids[idx];
-              id = parseInt(id.substring(8));
+              id = id.substring(8);
               if(!isNaN(id)) { valid_ids.push(id); }
             }
             var order = valid_ids.join(",");

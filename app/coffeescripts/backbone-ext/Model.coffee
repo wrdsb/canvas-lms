@@ -1,7 +1,7 @@
 define [
   'compiled/util/mixin'
   'underscore'
-  'use!vendor/backbone'
+  'vendor/backbone'
   'compiled/backbone-ext/Model/computedAttributes'
   'compiled/backbone-ext/Model/dateAttributes'
   'compiled/backbone-ext/Model/errors'
@@ -73,9 +73,9 @@ define [
     #   @get 'foo.bar' // returns catz
     #
     # @api backbone override
-    deepGet: (property) -> 
+    deepGet: (property) ->
       split = property.split "."
-      value = @get split.shift() 
+      value = @get split.shift()
 
       # Move through objects until found
       while next = split.shift()

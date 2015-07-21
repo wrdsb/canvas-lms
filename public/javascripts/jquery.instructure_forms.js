@@ -21,6 +21,8 @@ define([
   'jquery' /* jQuery, $ */,
   'underscore',
   'compiled/xhr/FakeXHR',
+  'compiled/behaviors/authenticity_token',
+  'str/htmlEscape',
   'jquery.ajaxJSON' /* ajaxJSON, defaultAjaxError */,
   'jquery.disableWhileLoading' /* disableWhileLoading */,
   'jquery.google-analytics' /* trackEvent */,
@@ -30,7 +32,7 @@ define([
   'compiled/jquery.rails_flash_notifications',
   'tinymce.editor_box' /* editorBox */,
   'vendor/jquery.scrollTo' /* /\.scrollTo/ */
-], function(INST, I18n, $, _, FakeXHR) {
+], function(INST, I18n, $, _, FakeXHR, authenticity_token, htmlEscape) {
 
   // Intercepts the default form submission process.  Uses the form tag's
   // current action and method attributes to know where to submit to.
@@ -65,6 +67,7 @@ define([
   //      encompassing the request(s) triggered by the submit action and 2. the
   //      formData being posted
   $.fn.formSubmit = function(options) {
+    $(this).markRequired(options);
     this.submit(function(event) {
       var $form = $(this); //this is to handle if bind to a template element, then it gets cloned the original this would not be the same as the this inside of here.
        // disableWhileLoading might need to wrap this, so we don't want to modify the original
@@ -188,6 +191,7 @@ define([
           intent: options.intent,
           folder_id: $.isFunction(options.folder_id) ? (options.folder_id.call($form)) : options.folder_id,
           file_elements: $form.find("input[type='file']:visible"),
+          files: $.isFunction(options.files) ? (options.files.call($form)) : options.files,
           url: (options.upload_only ? null : action),
           method: options.method,
           uploadDataUrl: options.uploadDataUrl,
@@ -218,7 +222,7 @@ define([
         });
       } else if(doUploadFile) {
         var id            = _.uniqueId(formId + "_"),
-            $frame        = $("<div style='display: none;' id='box_" + id + "'><iframe id='frame_" + id + "' name='frame_" + id + "' src='about:blank' onload='$(\"#frame_" + id + "\").triggerHandler(\"form_response_loaded\");'></iframe>")
+            $frame        = $("<div style='display: none;' id='box_" + htmlEscape(id) + "'><iframe id='frame_" + htmlEscape(id) + "' name='frame_" + htmlEscape(id) + "' src='about:blank' onload='$(\"#frame_" + htmlEscape(id) + "\").triggerHandler(\"form_response_loaded\");'></iframe>")
                                 .appendTo("body").find("#frame_" + id),
             formMethod    = method,
             priorTarget   = $form.attr('target'),
@@ -310,8 +314,8 @@ define([
           (options.upload_error || options.error).call($this, data);
         }
         } finally {}
-        
-      }, function() { 
+
+      }, function() {
         return (options.upload_error || options.error).apply(this, arguments);
       });
     };
@@ -325,7 +329,8 @@ define([
           'attachment[intent]': options.intent,
           'attachment[asset_string]': options.asset_string,
           'attachment[filename]': item.name,
-          'attachment[context_code]': options.context_code
+          'attachment[context_code]': options.context_code,
+          'attachment[duplicate_handling]': 'rename'
         }, options.formDataTarget == 'uploadDataUrl' ? options.formData : {}), item);
       } else {
         ready.call($this);
@@ -337,10 +342,8 @@ define([
   $.ajaxJSONFiles = function(url, submit_type, formData, files, success, error, options) {
     var $newForm = $(document.createElement("form"));
     $newForm.attr('action', url).attr('method', submit_type);
-    if(!formData.authenticity_token) {
-      // TODO: remove me once we stop proxying file uploads
-      formData.authenticity_token = ENV.AUTHENTICITY_TOKEN;
-    }
+    // TODO: remove me once we stop proxying file uploads
+    formData.authenticity_token = authenticity_token();
     var fileNames = {};
     files.each(function() {
       fileNames[$(this).attr('name')] = true;
@@ -379,10 +382,8 @@ define([
     });
   }
   $.ajaxFileUpload = function(options) {
-    if(!options.data.authenticity_token) {
-      // TODO: remove me once we stop proxying file uploads
-      options.data.authenticity_token = ENV.AUTHENTICITY_TOKEN;
-    }
+    // TODO: remove me once we stop proxying file uploads
+    options.data.authenticity_token = authenticity_token();
     $.toMultipartForm(options.data, function(params) {
       $.sendFormAsBinary({
         url: options.url,
@@ -444,30 +445,30 @@ define([
           options.error.call(this, "aborted by the user", xhr, event);
         }
       }, false);
-      xhr.onreadystatechange = function(event) {
-        if(xhr.readyState == 4) {
-          var json = null;
-          try {
-            json = $.parseJSON(xhr.responseText);
-          } catch(e) { }
-          if($.httpSuccess(xhr)) {
-            if(json && !json.errors) {
-              if(options.success && $.isFunction(options.success)) {
-                options.success.call(this, json, xhr, event);
-              }
-            } else {
-              if(options.error && $.isFunction(options.error)) {
-                options.error.call(this, json || xhr.responseText, xhr, event);
-              }
+    }
+    xhr.onreadystatechange = function(event) {
+      if(xhr.readyState == 4) {
+        var json = null;
+        try {
+          json = $.parseJSON(xhr.responseText);
+        } catch(e) { }
+        if($.httpSuccess(xhr)) {
+          if(json && !json.errors) {
+            if(options.success && $.isFunction(options.success)) {
+              options.success.call(this, json, xhr, event);
             }
           } else {
             if(options.error && $.isFunction(options.error)) {
               options.error.call(this, json || xhr.responseText, xhr, event);
             }
           }
+        } else {
+          if(options.error && $.isFunction(options.error)) {
+            options.error.call(this, json || xhr.responseText, xhr, event);
+          }
         }
-      };
-    }
+      }
+    };
     xhr.open(method, url);
     xhr.setRequestHeader('Accept', 'application/json, text/javascript, */*');
     xhr.setRequestHeader("X-Requested-With", "XMLHttpRequest");
@@ -514,6 +515,7 @@ define([
     }
     if(window.FormData && !hasFakeFile) {
       var fd = new FormData();
+      // xsslint xssable.receiver.whitelist fd
       for(var idx in params) {
         var param = params[idx];
         if(window.FileList && (param instanceof FileList)) {
@@ -678,8 +680,7 @@ define([
       if ((inputType == "radio" || inputType == 'checkbox') && !$input.attr('checked')) return;
       var val = $input.val();
       if ($input.hasClass('datetime_field_enabled')) {
-        var suggestText = $input.parent().children(".datetime_suggest").text();
-        if (suggestText) val = suggestText;
+        val = $input.data('iso8601');
       }
       try {
         if($input.data('rich_text')) {
@@ -808,7 +809,7 @@ define([
   //  numbers: list of strings, elements that must be blank or a valid number
   //  property_validations: hash, where key names are form element names
   //    and key values are functions to call on the given data.  The function
-  //    should return true if valid, false otherwise.
+  //    should return nothing if valid, an error message for display otherwise.
   $.fn.validateForm = function(options) {
     if (this.length === 0) {
       return false;
@@ -833,14 +834,15 @@ define([
           if (!errors[name]) {
             errors[name] = [];
           }
-          errors[name].push(I18n.t('errors.field_is_required', "This field is required"));
+          var fieldPrompt = $form.getFieldLabelString(name);
+          errors[name].push(I18n.t('errors.required', "Required field")+(fieldPrompt ? ': '+fieldPrompt : ''));
         }
       });
     }
     if(options.date_fields) {
       $.each(options.date_fields, function(i, name) {
         var $item = $form.find("input[name='" + name + "']").filter(".datetime_field_enabled");
-        if($item.length && $item.parent().children(".datetime_suggest").hasClass('invalid_datetime')) {
+        if ($item.length && $item.data('invalid')) {
           if (!errors[name]) {
             errors[name] = [];
           }
@@ -933,28 +935,29 @@ define([
       if($form.find(":input[name='" + i + "'],:input[name*='[" + i + "]']").length > 0) {
         $.each(val, function(idx, msg) {
           if(!errors[i]) {
-            errors[i] = msg;
+            errors[i] = htmlEscape(msg);
           } else {
-            errors[i] += "<br/>" + msg;
+            errors[i] += "<br/>" + htmlEscape(msg);
           }
         });
       } else {
         $.each(val, function(idx, msg) {
           if(!errors.general) {
-            errors.general = msg;
+            errors.general = htmlEscape(msg);
           } else {
-            errors.general += "<br/>" + msg;
+            errors.general += "<br/>" + htmlEscape(msg);
           }
         });
       }
     });
     var hasErrors = false;
     var highestTop = 0;
+    var lastField = null;
     var currentTop = $(document).scrollTop();
     var errorDetails = {};
     $('#aria_alerts').empty();
     $.each(errors, function(name, msg) {
-      var $obj = $form.find(":input[name='" + name + "'],:input[name*='[" + name + "]']").filter(":first");
+      var $obj = $form.find(":input[name='" + name + "'],:input[name*='[" + name + "]']").filter(":visible").first();
       if(!$obj || $obj.length === 0 || name == "general") {
         $obj = $form;
       }
@@ -963,12 +966,14 @@ define([
       }
       errorDetails[name] = {object: $obj, message: msg};
       hasErrors = true;
-      var offset = $obj.errorBox(msg).offset();
+      var offset = $obj.errorBox($.raw(msg)).offset();
       if (offset.top > highestTop) {
         highestTop = offset.top;
       }
+      lastField = $obj;
     });
-    for(var idx in elementErrors) {
+    if (lastField) {lastField.focus();}
+    for(var idx=0, l=elementErrors.length; idx < l; idx++) {
       var $obj = elementErrors[idx][0];
       var msg = elementErrors[idx][1];
       hasErrors = true;
@@ -1000,13 +1005,12 @@ define([
                           "<img src='/images/error_bottom.png' class='error_bottom'/>" +
                         "</div>").appendTo("body");
       }
+      $.screenReaderFlashError(message);
+
       var $box = $template.clone(true).attr('id', '').css('zIndex', $obj.zIndex() + 1).appendTo("body");
-      $box.find(".error_text").html(message);
-      // it'd be more semantic to make the error_box have a role=alert but that doesn't work everywhere
-      // http://blog.paciellogroup.com/2012/06/html5-accessibility-chops-aria-rolealert-browser-support/
-      // we also have to add aria_alerts to the layout itself, since creating
-      // it dynamically means VoiceOver won't read it
-      $('#aria_alerts').append($('<div/>').html(message));
+
+      // If our message happens to be a safe string, parse it as such. Otherwise, clean it up. //
+      $box.find(".error_text").html(htmlEscape(message));
 
       var offset = $obj.offset();
       var height = $box.outerHeight();
@@ -1019,20 +1023,25 @@ define([
         left: offset.left + objLeftIndent
       }).fadeIn('fast');
 
+      var cleanup = function() {
+        $box.remove();
+        $obj.removeData('associated_error_box');
+        $obj.removeData('associated_error_object');
+      };
+
+      var fade = function() {
+        $box.stop(true,true).fadeOut('slow', cleanup);
+      };
+
       $obj.data({
         associated_error_box :$box,
         associated_error_object: $obj
-      }).focus(function() {
-        $box.fadeOut('slow', function() {
-          $box.remove();
-        });
-      });
+      }).click(fade).keypress(fade);
 
       $box.click(function() {
-        $(this).fadeOut('fast', function() {
-          $(this).remove();
-        });
+        $(this).fadeOut('fast', cleanup);
       });
+
       $.fn.errorBox.errorBoxes.push($obj);
       if(!$.fn.errorBox.isBeingAdjusted) {
         $.moveErrorBoxes();
@@ -1047,7 +1056,12 @@ define([
   $.moveErrorBoxes = function() {
     var list = [];
     var prevList = $.fn.errorBox.errorBoxes;
-    for(var idx in prevList) {
+    // ember does silly things with arrays
+    // so this for loop was changed from a for-in
+    // to how you see it below.
+    // That way, canvas doesn't blow up in some places
+    // ... at least not because of this
+    for(var idx = 0; idx < prevList.length; idx++) {
       var $obj = prevList[idx],
           $box = $obj.data('associated_error_box');
       if($box && $box.length && $box[0].parentNode) {
@@ -1095,4 +1109,34 @@ define([
     return this;
   };
 
+  $.fn.markRequired = function(options) {
+    if (!options.required) {return;}
+    var required = options.required;
+    if (options.object_name) {
+      required = $._addObjectName(required, options.object_name);
+    }
+    $form = $(this);
+    $.each(required, function(i, name) {
+      var field = $form.find('[name="'+name+'"]');
+      if (!field.length) {return;}
+      field.attr({'aria-required': 'true'});
+      // TODO: enable this, maybe when Safari supports it
+      // field.attr({required: true});
+      field.each(function() {
+        if (!this.id) {return;}
+        label = $('label[for="'+this.id+'"]');
+        if (!label.length) {return;}
+        // Added the if statement to prevent the JS from adding the asterisk to the forgot password placeholder.
+        if (this.id != 'pseudonym_session_unique_id_forgot') {label.append($('<span />').text('*').attr('title', I18n.t('errors.field_is_required', "This field is required")));}
+      });
+    });
+  };
+
+  $.fn.getFieldLabelString = function(name) {
+    var field = $(this).find('[name="'+name+'"]');
+    if (!field.length || !field[0].id) {return;}
+    label = $('label[for="'+field[0].id+'"]');
+    if (!label.length) {return;}
+    return label[0].firstChild.textContent;
+  };
 });

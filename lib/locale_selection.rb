@@ -4,6 +4,7 @@ module LocaleSelection
     user = options[:user]
     root_account = options[:root_account]
     accept_language = options[:accept_language]
+    session_locale = options[:session_locale]
 
     # groups cheat and set the context to be the group after get_context runs
     # but before set_locale runs, but we want to do locale lookup based on the
@@ -12,22 +13,29 @@ module LocaleSelection
       context = context.context
     end
 
-    if context && context.is_a?(Course) && context.locale
-      context.locale
-    elsif user && user.locale
-      user.locale
-    elsif context && context.is_a?(Course) && context.account && (account_locale = context.account.default_locale(true))
-      account_locale
-    elsif context && context.is_a?(Account) && (account_locale = context.default_locale(true))
-      account_locale
-    elsif root_account && root_account.default_locale
-      root_account.default_locale
-    elsif accept_language && locale = infer_browser_locale(accept_language, I18n.available_locales)
-      user.update_attribute(:browser_locale, locale) if user && user.browser_locale != locale
-      locale
-    elsif user && user.browser_locale
-      user.browser_locale
-    end || I18n.default_locale.to_s
+    sources = [
+      -> { context.locale if context.try(:is_a?, Course) },
+      -> { user.locale if user && user.locale },
+      -> { session_locale if session_locale },
+      -> { context.account.try(:default_locale, true) if context.try(:is_a?, Course) },
+      -> { context.default_locale(true) if context.try(:is_a?, Account) },
+      -> { root_account.try(:default_locale) },
+      -> {
+        if accept_language && locale = infer_browser_locale(accept_language, I18n.available_locales)
+          user.update_attribute(:browser_locale, locale) if user && user.browser_locale != locale
+          locale
+        end
+         },
+      -> { user.try(:browser_locale) },
+      -> { I18n.default_locale.to_s }
+          ]
+
+    sources.each do |source|
+      locale = source.call
+      locale = nil unless I18n.locale_available?(locale)
+      return locale if locale
+    end
+    nil
   end
 
   QUALITY_VALUE = /;q=([01]\.(\d{0,3})?)/
@@ -54,15 +62,19 @@ module LocaleSelection
 
     best_locales = supported_locales.inject([]) { |ary, locale|
       if best_range = ranges.detect { |r, q| r + '-' == (locale.downcase + '-')[0..r.size] || r == '*' }
-        ary << [locale, best_range.last] unless best_range.last == 0
+        ary << [locale, best_range.last, ranges.index(best_range)] unless best_range.last == 0
       end
       ary
-    }.sort_by{ |l, q| [-q, l.count('-'), l]}
+    }.sort_by{ |l, q, pos| [-q, pos, l.count('-'), l]}
     # wrt the sorting here, rfc2616 doesn't specify which tag is preferable
     # if there is a quality tie (due to prefix matching or otherwise).
-    # technically they are equally acceptable, though we'll just always go
-    # with the shorter one (and then alphabetical). this seems reasonable for
-    # scenarios like the following:
+    # technically they are equally acceptable.  we've decided to break ties
+    # with:
+    # * position listed in header (tie here comes from '*')
+    # * length of locale (shorter first)
+    # * alphabetical
+    #
+    # this seems reasonable for scenarios like the following:
     #   given that i accept 'en'
     #     and canvas is localized in 'en-US', 'en-GB-oy' and 'en-CA-eh'
     #   then i should get 'en-US'
@@ -75,14 +87,14 @@ module LocaleSelection
   # there are other translations for that locale)
   def available_locales
     I18n.available_locales.inject({}) do |hash, locale|
-      name = I18n.send(:t, "locales", :locale => locale)[locale]
+      name = I18n.send(:t, :locales, :locale => locale)[locale]
       hash[locale.to_s] = name if name
       hash
     end
   end
 
   def crowdsourced_locales
-    @crowdsourced_locales ||= I18n.available_locales.select{|locale| I18n.send(:t, "crowdsourced", :locale => locale) == true}
+    @crowdsourced_locales ||= I18n.available_locales.select{ |locale| I18n.send(:t, :crowdsourced, :locale => locale) == true }
   end
 end
 

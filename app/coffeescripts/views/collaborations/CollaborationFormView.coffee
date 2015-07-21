@@ -31,8 +31,10 @@ define [
     events:
       'submit': 'onSubmit'
       'click .cancel_button': 'onCancel'
+      'keydown': 'onKeydown'
 
     initialize: ->
+      super
       @cacheElements()
       @picker = new CollaboratorPickerView(el: @$collaborators)
       @titleMaxLength = ENV.TITLE_MAX_LEN #255
@@ -43,7 +45,7 @@ define [
 
     render: (focus = true) ->
       @$el.show()
-      @$el.find('h2').focus() if focus
+      @$el.find('[name="collaboration[collaboration_type]"]').focus() if focus
       @picker.render() if @$collaborators.is(':empty')
       this
 
@@ -65,6 +67,10 @@ define [
       e.preventDefault()
       @$el.hide()
       @trigger('hide')
+
+    onKeydown: (e) ->
+      if e.which == 27
+        @onCancel(e)
 
     raiseTitleError: ->
       @trigger('error', @$titleInput, @translations.errors.noName)

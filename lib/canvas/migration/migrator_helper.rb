@@ -33,6 +33,8 @@ module MigratorHelper
   attr_reader :overview
 
   def self.get_utc_time_from_timestamp(timestamp)
+    return nil if timestamp.nil?
+
     # timestamp can be either a time string in the format "2011-04-30T00:00:00-06:00",
     # or an integer epoch * 1000
     if timestamp.to_s.match(/^-?[0-9.]+$/)
@@ -46,10 +48,6 @@ module MigratorHelper
     else
       Time.use_zone("UTC"){Time.zone.parse(timestamp.to_s)}
     end
-  end
-
-  def self.unzip_command(zip_file, dest_dir)
-    "unzip -qo #{Shellwords.escape(zip_file)} -d #{Shellwords.escape(dest_dir)} 2>&1"
   end
 
   def add_error(type, message, object=nil, e=nil)
@@ -111,7 +109,7 @@ module MigratorHelper
 
     path = create_export_dir(slug)
     i = 1
-    while File.exists?(path) && File.directory?(path)
+    while File.exist?(path) && File.directory?(path)
       i += 1
       path = create_export_dir("#{slug}_attempt_#{i}")
     end
@@ -120,7 +118,7 @@ module MigratorHelper
   end
 
   def create_export_dir(slug)
-    config = Setting.from_config('external_migration')
+    config = ConfigFile.load('external_migration')
     if config && config[:data_folder]
       folder = config[:data_folder]
     else
@@ -136,7 +134,10 @@ module MigratorHelper
   # Does a JSON export of the courses
   def save_to_file(file_name = nil)
     make_export_dir
-    add_assessment_id_prepend
+
+    @course = @course.with_indifferent_access
+    Importers::AssessmentQuestionImporter.preprocess_migration_data(@course)
+
     file_name ||= File.join(@base_export_dir, FULL_COURSE_JSON_FILENAME)
     file_name = File.expand_path(file_name)
     @course[:full_export_file_path] = file_name
@@ -146,61 +147,75 @@ module MigratorHelper
     File.open(file_name, 'w') { |file| file << @course.to_json}
     file_name
   end
-  
-  def self.download_archive(settings)
-    config = Setting.from_config('external_migration') || {}
-    if settings[:export_archive_path]
-      settings[:archive_file] = File.open(settings[:export_archive_path], 'rb')
-    elsif settings[:course_archive_download_url].present?
-      # open-uri downloads the http response to a tempfile
-      settings[:archive_file] = open(settings[:course_archive_download_url])
-    elsif settings[:attachment_id]
-      att = Attachment.find(settings[:attachment_id])
-      settings[:archive_file] = att.open(:temp_folder => config[:data_folder], :need_local_file => true)
-    else
-      raise "No migration file found"
-    end
 
-    settings[:archive_file]
-  end
-  
   def id_prepender
     @settings[:id_prepender]
   end
-  
-  def prepend_id(id, prepend_value=nil)
-    prepend_value ||= id_prepender
+
+  def self.prepend_id(id, prepend_value)
     prepend_value ? "#{prepend_value}_#{id}" : id
   end
-  
-  def add_assessment_id_prepend
-    if id_prepender
-      if @course[:assessment_questions] && @course[:assessment_questions][:assessment_questions]
-        prepend_id_to_questions(@course[:assessment_questions][:assessment_questions])
-      end
-      if @course[:assessments] && @course[:assessments][:assessments]
-        prepend_id_to_assessments(@course[:assessments][:assessments])
+
+  def self.should_prepend?(type, id, existing_ids)
+    existing_ids.nil? || existing_ids[type].to_a.include?(id)
+  end
+
+  def self.prepend_id_to_assessment_question_banks(banks, prepend_value, existing_ids=nil)
+    banks.each do |b|
+      if should_prepend?(:assessment_question_banks, b[:migration_id], existing_ids)
+        b[:migration_id] = prepend_id(b[:migration_id], prepend_value)
       end
     end
   end
-  
-  def prepend_id_to_questions(questions, prepend_value=nil)
+
+  # still used by standard/quiz_converter
+  def self.prepend_id_to_questions(questions, prepend_value, existing_ids=nil)
+    key_types = {:migration_id => :assessment_questions, :question_bank_id => :assessment_question_banks,
+     :question_bank_migration_id => :assessment_question_banks, :assessment_question_migration_id => :assessment_questions}
+
     questions.each do |q|
-      q[:migration_id] = prepend_id(q[:migration_id], prepend_value)
-      q[:question_bank_id] = prepend_id(q[:question_bank_id], prepend_value) if q[:question_bank_id].present?
+      key_types.each do |key, type|
+        q[key] = prepend_id(q[key], prepend_value) if q[key].present? && should_prepend?(type, q[key], existing_ids)
+      end
     end
   end
-  
-  def prepend_id_to_assessments(assessments, prepend_value=nil)
+
+  def self.prepend_id_to_assessments(assessments, prepend_value, existing_ids=nil)
     assessments.each do |a|
-      a[:migration_id] = prepend_id(a[:migration_id], prepend_value)
+      if a[:migration_id].present? && should_prepend?(:assessments, a[:migration_id], existing_ids)
+        a[:migration_id] = prepend_id(a[:migration_id], prepend_value)
+        if h = a[:assignment]
+          h[:migration_id] = prepend_id(h[:migration_id], prepend_value)
+        end
+      end
+
       a[:questions].each do |q|
         if q[:question_type] == "question_reference"
-          q[:migration_id] = prepend_id(q[:migration_id], prepend_value)
+          if should_prepend?(:assessment_questions, q[:migration_id], existing_ids)
+            q[:migration_id] = prepend_id(q[:migration_id], prepend_value)
+          end
         elsif q[:question_type] == "question_group"
-          q[:question_bank_migration_id] = prepend_id(q[:question_bank_migration_id], prepend_value) if q[:question_bank_migration_id].present?
+          if q[:question_bank_migration_id].present? && should_prepend?(:assessment_question_banks, q[:question_bank_migration_id], existing_ids)
+            q[:question_bank_migration_id] = prepend_id(q[:question_bank_migration_id], prepend_value)
+          end
           q[:questions].each do |gq|
-            gq[:migration_id] = prepend_id(gq[:migration_id], prepend_value)
+            if should_prepend?(:assessment_questions, gq[:migration_id], existing_ids)
+              gq[:migration_id] = prepend_id(gq[:migration_id], prepend_value)
+            end
+          end
+        end
+      end
+    end
+  end
+
+  def self.prepend_id_to_linked_assessment_module_items(modules, prepend_value, existing_ids=nil)
+    modules.each do |m|
+      next unless m[:items]
+      m[:items].each do |i|
+        if i[:linked_resource_type] =~ /assessment|quiz/i
+          if should_prepend?(:assessments, i[:linked_resource_id], existing_ids)
+            i[:item_migration_id] = prepend_id(i[:item_migration_id], prepend_value)
+            i[:linked_resource_id] = prepend_id(i[:linked_resource_id], prepend_value)
           end
         end
       end
@@ -228,6 +243,18 @@ module MigratorHelper
     end
   end
 
+  def add_learning_outcome_to_overview(overview, outcome)
+    unless outcome[:type] == "learning_outcome_group"
+      overview[:learning_outcomes] << {:migration_id => outcome[:migration_id], :title => outcome[:title]}
+    end
+    if outcome[:outcomes]
+      outcome[:outcomes].each do |sub_outcome|
+        overview = add_learning_outcome_to_overview(overview, sub_outcome)
+      end
+    end
+    overview
+  end
+
   def overview
     return @overview if @overview
     logger.debug "Creating the overview hash."
@@ -253,6 +280,7 @@ module MigratorHelper
     @overview[:all_questions_qti_export] = @course[:all_questions_qti_export] if @course[:all_questions_qti_export]
     @overview[:course_outline] = @course[:course_outline] if @course[:course_outline]
     @overview[:error_count] = @error_count
+
     if @course[:assessments]
       @overview[:assessments] = []
       if @course[:assessments][:assessments]
@@ -269,9 +297,20 @@ module MigratorHelper
           assmnt[:max_points] = a[:max_points]
           assmnt[:duration] = a[:duration]
           assmnt[:error_message] = a[:error_message] if a[:error_message]
+          if a[:assignment] && a[:assignment][:migration_id]
+            assmnt[:assignment_migration_id] = a[:assignment][:migration_id]
+          end
         end
       end
     end
+
+    if @course[:assessment_question_banks]
+      @overview[:assessment_question_banks] ||= []
+      @course[:assessment_question_banks].each do |aqb|
+        @overview[:assessment_question_banks] << aqb.dup
+      end
+    end
+
     if @course[:calendar_events]
       @overview[:calendar_events] = []
       @course[:calendar_events].each do |e|
@@ -329,6 +368,8 @@ module MigratorHelper
         assign[:title] = a[:title]
         assign[:due_date] = a[:due_date]
         assign[:migration_id] = a[:migration_id]
+        assign[:quiz_migration_id] = a[:quiz_migration_id] if a[:quiz_migration_id]
+        assign[:assignment_group_migration_id] = a[:assignment_group_migration_id] if a[:assignment_group_migration_id]
         assign[:error_message] = a[:error_message] if a[:error_message]
       end
     end
@@ -346,6 +387,12 @@ module MigratorHelper
         topic[:topic_type] = t[:type]
         topic[:migration_id] = t[:migration_id]
         topic[:error_message] = t[:error_message] if t[:error_message]
+        if t[:assignment] && a_mig_id = t[:assignment][:migration_id]
+          if assign = @overview[:assignments].find{|a| a[:migration_id] == a_mig_id}
+            assign[:topic_migration_id] = t[:migration_id]
+            topic[:assignment_migration_id] = a_mig_id
+          end
+        end
       end
     end
     if @course[:assignment_groups]
@@ -386,7 +433,15 @@ module MigratorHelper
         tool[:title] = ct[:title]
       end
     end
-    
+
+    if @course[:learning_outcomes]
+      @overview[:learning_outcomes] = []
+      @course[:learning_outcomes].each do |outcome|
+        next unless outcome
+        add_learning_outcome_to_overview(@overview, outcome)
+      end
+    end
+
     if dates.length > 0
       @overview[:start_timestamp] ||= dates.min
       @overview[:end_timestamp] ||= dates.max

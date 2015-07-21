@@ -31,12 +31,12 @@ describe RubricsController do
 
       it "should be assigned with a course" do
         get 'index', :course_id => @course.id
-        response.should be_success
+        expect(response).to be_success
       end
 
       it "should be assigned with a user" do
         get 'index', :user_id => @user.id
-        response.should be_success
+        expect(response).to be_success
       end
     end
   end
@@ -47,33 +47,90 @@ describe RubricsController do
       post 'create', :course_id => @course.id
       assert_unauthorized
     end
+
     it "should assign variables" do
       course_with_teacher_logged_in(:active_all => true)
       post 'create', :course_id => @course.id, :rubric => {}
-      assigns[:rubric].should_not be_nil
-      assigns[:rubric].should_not be_new_record
-      response.should be_success
+      expect(assigns[:rubric]).not_to be_nil
+      expect(assigns[:rubric]).not_to be_new_record
+      expect(response).to be_success
       
     end
+
     it "should create an association if specified" do
       course_with_teacher_logged_in(:active_all => true)
       association = @course.assignments.create!(assignment_valid_attributes)
       post 'create', :course_id => @course.id, :rubric => {}, :rubric_association => {:association_type => association.class.to_s, :association_id => association.id}
-      assigns[:rubric].should_not be_nil
-      assigns[:rubric].should_not be_new_record
-      assigns[:rubric].rubric_associations.length.should eql(1)
-      response.should be_success
+      expect(assigns[:rubric]).not_to be_nil
+      expect(assigns[:rubric]).not_to be_new_record
+      expect(assigns[:rubric].rubric_associations.length).to eql(1)
+      expect(response).to be_success
     end
-    it "should invite users if specified" do
+
+    it "should associate outcomes correctly" do
       course_with_teacher_logged_in(:active_all => true)
-      association = @course.assignments.create!(assignment_valid_attributes)
-      post 'create', :course_id => @course.id, :rubric => {}, :rubric_association => {:association_type => association.class.to_s, :association_id => association.id, :invitations => "bob@example.com", :purpose => 'grading'}
-      assigns[:rubric].should_not be_nil
-      assigns[:rubric].should_not be_new_record
-      assigns[:rubric].rubric_associations.length.should eql(1)
-      assigns[:rubric].rubric_associations.first.assessment_requests.should_not be_empty
-      assigns[:rubric].rubric_associations.first.assessment_requests.first.assessor.email.should eql("bob@example.com")
-      response.should be_success
+      assignment = @course.assignments.create!(assignment_valid_attributes)
+      outcome_group = @course.root_outcome_group
+      outcome = @course.created_learning_outcomes.create!(
+        :description => 'hi',
+        :short_description => 'hi'
+      )
+      outcome_group.add_outcome(outcome)
+      outcome_group.save!
+
+      create_params = {
+                            "course_id" => @course.id,
+                      "points_possible" => "5",
+                               "rubric" => {
+                              "criteria" => {
+            "0" => {
+                      "description" => "hi",
+                               "id" => "",
+              "learning_outcome_id" => outcome.id,
+                 "long_description" => "",
+                   "mastery_points" => "3",
+                           "points" => "5",
+                          "ratings" => {
+                "0" => {
+                  "description" => "Exceeds Expectations",
+                           "id" => "blank",
+                       "points" => "5"
+                },
+                "1" => {
+                  "description" => "Meets Expectations",
+                           "id" => "blank",
+                       "points" => "3"
+                },
+                "2" => {
+                  "description" => "Does Not Meet Expectations",
+                           "id" => "blank_2",
+                       "points" => "0"
+                }
+              }
+            }
+          },
+          "free_form_criterion_comments" => "0",
+                       "points_possible" => "5",
+                                 "title" => "Some Rubric"
+        },
+                   "rubric_association" => {
+            "association_id" => assignment.id,
+          "association_type" => "Assignment",
+          "hide_score_total" => "0",
+                        "id" => "",
+                   "purpose" => "grading",
+           "use_for_grading" => "1"
+        },
+                "rubric_association_id" => "",
+                            "rubric_id" => "new",
+        "skip_updating_points_possible" => "false",
+                                "title" => "Some Rubric"
+      }
+
+      post 'create', create_params
+      
+      expect(assignment.reload.learning_outcome_alignments.count).to eq 1
+      expect(Rubric.last.learning_outcome_alignments.count).to eq 1
     end
   end
   
@@ -87,19 +144,19 @@ describe RubricsController do
     it "should assign variables" do
       course_with_teacher_logged_in(:active_all => true)
       rubric_association_model(:user => @user, :context => @course)
-      @course.rubrics.should be_include(@rubric)
+      expect(@course.rubrics).to be_include(@rubric)
       put 'update', :course_id => @course.id, :id => @rubric.id, :rubric => {}
-      assigns[:rubric].should eql(@rubric)
-      response.should be_success
+      expect(assigns[:rubric]).to eql(@rubric)
+      expect(response).to be_success
     end
     it "should update the rubric if updateable" do
       course_with_teacher_logged_in(:active_all => true)
       rubric_association_model(:user => @user, :context => @course)
       put 'update', :course_id => @course.id, :id => @rubric.id, :rubric => {:title => "new title"}
-      assigns[:rubric].should eql(@rubric)
-      assigns[:rubric].title.should eql("new title")
-      assigns[:association].should be_nil
-      response.should be_success
+      expect(assigns[:rubric]).to eql(@rubric)
+      expect(assigns[:rubric].title).to eql("new title")
+      expect(assigns[:association]).to be_nil
+      expect(response).to be_success
     end
     it "should update the rubric even if it doesn't belong to the context, just an association" do
       course_model
@@ -111,11 +168,11 @@ describe RubricsController do
       @rubric.context = @course2
       @rubric.save
       put 'update', :course_id => @course.id, :id => @rubric.id, :rubric => {:title => "new title"}, :rubric_association_id => @rubric_association.id
-      assigns[:rubric].should eql(@rubric)
-      assigns[:rubric].title.should eql("new title")
-      assigns[:association].should_not be_nil
-      assigns[:association].should eql(@rubric_association)
-      response.should be_success
+      expect(assigns[:rubric]).to eql(@rubric)
+      expect(assigns[:rubric].title).to eql("new title")
+      expect(assigns[:association]).not_to be_nil
+      expect(assigns[:association]).to eql(@rubric_association)
+      expect(response).to be_success
     end
 
     # this happens after a importing content into a new course, before a new
@@ -129,24 +186,23 @@ describe RubricsController do
       @rubric.save
       @rubric_association.context = @course2
       @rubric_association.save
-      rescue_action_in_public!
       put 'update', :course_id => @course.id, :id => @rubric.id, :rubric => {:title => "new title"}, :rubric_association_id => @rubric_association.id
-      assigns[:rubric].should_not be_nil
-      assigns[:rubric].should_not eql(@rubric)
-      assigns[:rubric].title.should eql("new title")
+      expect(assigns[:rubric]).not_to be_nil
+      expect(assigns[:rubric]).not_to eql(@rubric)
+      expect(assigns[:rubric].title).to eql("new title")
     end
     it "should not update the rubric if not updateable (should make a new one instead)" do
       course_with_teacher_logged_in(:active_all => true)
       rubric_association_model(:user => @user, :context => @course, :purpose => 'grading')
-      @rubric.rubric_associations.create!(:purpose => 'grading')
+      @rubric.rubric_associations.create!(:purpose => 'grading', :context => @course, :association_object => @course)
       put 'update', :course_id => @course.id, :id => @rubric.id, :rubric => {:title => "new title"}, :rubric_association_id => @rubric_association.id
-      assigns[:rubric].should_not eql(@rubric)
-      assigns[:rubric].should_not be_new_record
-      assigns[:association].should_not be_nil
-      assigns[:association].should eql(@rubric_association)
-      assigns[:association].rubric.should eql(assigns[:rubric])
-      assigns[:rubric].title.should eql("new title")
-      response.should be_success
+      expect(assigns[:rubric]).not_to eql(@rubric)
+      expect(assigns[:rubric]).not_to be_new_record
+      expect(assigns[:association]).not_to be_nil
+      expect(assigns[:association]).to eql(@rubric_association)
+      expect(assigns[:association].rubric).to eql(assigns[:rubric])
+      expect(assigns[:rubric].title).to eql("new title")
+      expect(response).to be_success
     end
     it "should not update the rubric and not create a new one if the parameters don't change the rubric" do
       course_with_teacher_logged_in(:active_all => true)
@@ -176,43 +232,231 @@ describe RubricsController do
       }
       @rubric.update_criteria(params)
       @rubric.save!
-      @rubric.rubric_associations.create!(:purpose => 'grading')
+      @rubric.rubric_associations.create!(:purpose => 'grading', :context => @course, :association_object => @course)
       criteria = @rubric.criteria
       put 'update', :course_id => @course.id, :id => @rubric.id, :rubric => params, :rubric_association_id => @rubric_association.id
-      assigns[:rubric].should eql(@rubric)
-      assigns[:rubric].criteria.should eql(criteria)
-      assigns[:rubric].should_not be_new_record
-      assigns[:association].should_not be_nil
-      assigns[:association].should eql(@rubric_association)
-      assigns[:association].rubric.should eql(assigns[:rubric])
-      assigns[:rubric].title.should eql("new title")
-      response.should be_success
+      expect(assigns[:rubric]).to eql(@rubric)
+      expect(assigns[:rubric].criteria).to eql(criteria)
+      expect(assigns[:rubric]).not_to be_new_record
+      expect(assigns[:association]).not_to be_nil
+      expect(assigns[:association]).to eql(@rubric_association)
+      expect(assigns[:association].rubric).to eql(assigns[:rubric])
+      expect(assigns[:rubric].title).to eql("new title")
+      expect(response).to be_success
     end
 
     it "should update the newly-created rubric if updateable, even if the old id is specified" do
       course_with_teacher_logged_in(:active_all => true)
       rubric_association_model(:user => @user, :context => @course)
       put 'update', :course_id => @course.id, :id => @rubric.id, :rubric => {:title => "new title"}, :rubric_association_id => @rubric_association.id
-      assigns[:rubric].should eql(@rubric)
-      assigns[:rubric].title.should eql("new title")
+      expect(assigns[:rubric]).to eql(@rubric)
+      expect(assigns[:rubric].title).to eql("new title")
       @rubric2 = assigns[:rubric]
-      assigns[:association].should_not be_nil
-      assigns[:association].should eql(@rubric_association)
-      response.should be_success
+      expect(assigns[:association]).not_to be_nil
+      expect(assigns[:association]).to eql(@rubric_association)
+      expect(response).to be_success
       put 'update', :course_id => @course.id, :id => @rubric.id, :rubric => {:title => "newer title"}, :rubric_association_id => @rubric_association.id
-      assigns[:rubric].should eql(@rubric2)
-      assigns[:rubric].title.should eql("newer title")
-      response.should be_success
+      expect(assigns[:rubric]).to eql(@rubric2)
+      expect(assigns[:rubric].title).to eql("newer title")
+      expect(response).to be_success
     end
     it "should update the association if specified" do
       course_with_teacher_logged_in(:active_all => true)
       rubric_association_model(:user => @user, :context => @course)
-      put 'update', :course_id => @course.id, :id => @rubric.id, :rubric => {:title => "new title"}, :rubric_association => {:association_type => @rubric_association.association.class.to_s, :association_id => @rubric_association.association.id, :title => "some title", :id => @rubric_association.id}
-      assigns[:rubric].should eql(@rubric)
-      assigns[:rubric].title.should eql("new title")
-      assigns[:association].should eql(@rubric_association)
-      assigns[:rubric].rubric_associations.find_by_id(@rubric_association.id).title.should eql("some title")
-      response.should be_success
+      put 'update', :course_id => @course.id, :id => @rubric.id, :rubric => {:title => "new title"}, :rubric_association => {:association_type => @rubric_association.association_object.class.to_s, :association_id => @rubric_association.association_object.id, :title => "some title", :id => @rubric_association.id}
+      expect(assigns[:rubric]).to eql(@rubric)
+      expect(assigns[:rubric].title).to eql("new title")
+      expect(assigns[:association]).to eql(@rubric_association)
+      expect(assigns[:rubric].rubric_associations.where(id: @rubric_association).first.title).to eql("some title")
+      expect(response).to be_success
+    end
+
+    it "should add an outcome association if one is linked" do
+      course_with_teacher_logged_in(:active_all => true)
+      assignment = @course.assignments.create!(assignment_valid_attributes)
+      rubric_association_model(:user => @user, :context => @course)
+      outcome_group = @course.root_outcome_group
+      outcome = @course.created_learning_outcomes.create!(
+        :description => 'hi',
+        :short_description => 'hi'
+      )
+      outcome_group.add_outcome(outcome)
+      outcome_group.save!
+
+      update_params = {
+                            "course_id" => @course.id,
+                                   "id" => @rubric.id,
+                      "points_possible" => "5",
+                               "rubric" => {
+                              "criteria" => {
+            "0" => {
+                      "description" => "hi",
+                               "id" => "",
+              "learning_outcome_id" => outcome.id,
+                 "long_description" => "",
+                           "points" => "5",
+                          "ratings" => {
+                "0" => {
+                  "description" => "Exceeds Expectations",
+                           "id" => "blank",
+                       "points" => "5"
+                },
+                "1" => {
+                  "description" => "Meets Expectations",
+                           "id" => "blank",
+                       "points" => "3"
+                },
+                "2" => {
+                  "description" => "Does Not Meet Expectations",
+                           "id" => "blank_2",
+                       "points" => "0"
+                }
+              }
+            }
+          },
+          "free_form_criterion_comments" => "0",
+                       "points_possible" => "5",
+                                 "title" => "Some Rubric"
+        },
+                   "rubric_association" => {
+            "association_id" => assignment.id,
+          "association_type" => "Assignment",
+          "hide_score_total" => "0",
+                        "id" => @rubric_association.id,
+                   "purpose" => "grading",
+           "use_for_grading" => "1"
+        },
+                "rubric_association_id" => @rubric_association.id,
+                            "rubric_id" => @rubric.id,
+        "skip_updating_points_possible" => "false",
+                                "title" => "Some Rubric"
+      }
+
+      expect(assignment.reload.learning_outcome_alignments.count).to eq 0
+      expect(@rubric.reload.learning_outcome_alignments.count).to eq 0
+
+      put 'update', update_params
+
+      expect(assignment.reload.learning_outcome_alignments.count).to eq 1
+      expect(@rubric.reload.learning_outcome_alignments.count).to eq 1
+    end
+
+    it "should remove an outcome association if one is removed" do
+      course_with_teacher_logged_in(:active_all => true)
+      outcome_with_rubric
+      assignment = @course.assignments.create!(assignment_valid_attributes)
+      association = @rubric.associate_with(assignment, @course, :purpose => 'grading')
+
+      update_params = {
+                            "course_id" => @course.id,
+                                   "id" => @rubric.id,
+                      "points_possible" => "5",
+                               "rubric" => {
+                              "criteria" => {
+            "0" => {
+                      "description" => "Description of criterion",
+                               "id" => "",
+              "learning_outcome_id" => "",
+                 "long_description" => "",
+                           "points" => "5",
+                          "ratings" => {
+                "0" => {
+                  "description" => "Full Marks",
+                           "id" => "blank",
+                       "points" => "5"
+                },
+                "1" => {
+                  "description" => "No Marks",
+                           "id" => "blank_2",
+                       "points" => "0"
+                }
+              }
+            }
+          },
+          "free_form_criterion_comments" => "0",
+                       "points_possible" => "5",
+                                 "title" => "Some Rubric"
+        },
+                   "rubric_association" => {
+            "association_id" => assignment.id,
+          "association_type" => "Assignment",
+          "hide_score_total" => "0",
+                        "id" => association.id,
+                   "purpose" => "grading",
+           "use_for_grading" => "1"
+        },
+                "rubric_association_id" => association.id,
+                            "rubric_id" => @rubric.id,
+        "skip_updating_points_possible" => "false",
+                                "title" => "Some Rubric"
+      }
+
+      expect(assignment.reload.learning_outcome_alignments.count).to eq 1
+      expect(@rubric.reload.learning_outcome_alignments.count).to eq 1
+
+      put 'update', update_params
+
+      expect(assignment.reload.learning_outcome_alignments.count).to eq 0
+      expect(@rubric.reload.learning_outcome_alignments.count).to eq 0
+    end
+
+    it "should remove an outcome association for all associations" do
+      course_with_teacher_logged_in(:active_all => true)
+      outcome_with_rubric
+      assignment = @course.assignments.create!(assignment_valid_attributes)
+      association = @rubric.associate_with(assignment, @course, :purpose => 'grading')
+
+      update_params = {
+                            "course_id" => @course.id,
+                                   "id" => @rubric.id,
+                      "points_possible" => "5",
+                               "rubric" => {
+                              "criteria" => {
+            "0" => {
+                      "description" => "Description of criterion",
+                               "id" => "",
+              "learning_outcome_id" => "",
+                 "long_description" => "",
+                           "points" => "5",
+                          "ratings" => {
+                "0" => {
+                  "description" => "Full Marks",
+                           "id" => "blank",
+                       "points" => "5"
+                },
+                "1" => {
+                  "description" => "No Marks",
+                           "id" => "blank_2",
+                       "points" => "0"
+                }
+              }
+            }
+          },
+          "free_form_criterion_comments" => "0",
+                       "points_possible" => "5",
+                                 "title" => "Some Rubric"
+        },
+                   "rubric_association" => {
+            "association_id" => @course.id,
+          "association_type" => "Course",
+          "hide_score_total" => "0",
+                        "id" => "",
+                   "purpose" => "bookmark",
+           "use_for_grading" => "0"
+        },
+                "rubric_association_id" => "",
+                            "rubric_id" => @rubric.id,
+        "skip_updating_points_possible" => "false",
+                                "title" => "Some Rubric"
+      }
+
+      expect(assignment.reload.learning_outcome_alignments.count).to eq 1
+      expect(@rubric.reload.learning_outcome_alignments.count).to eq 1
+
+      put 'update', update_params
+
+      expect(assignment.reload.learning_outcome_alignments.count).to eq 0
+      expect(@rubric.reload.learning_outcome_alignments.count).to eq 0
     end
   end
   
@@ -227,40 +471,65 @@ describe RubricsController do
       course_with_teacher_logged_in(:active_all => true)
       rubric_association_model(:user => @user, :context => @course)
       delete 'destroy', :course_id => @course.id, :id => @rubric.id
-      response.should be_success
-      assigns[:rubric].should be_deleted
+      expect(response).to be_success
+      expect(assigns[:rubric]).to be_deleted
     end
     it "should delete the rubric if the rubric is only associated with a course" do
       course_with_teacher_logged_in :active_all => true
-      Account.site_admin.add_user(@user, 'AccountAdmin')
-      Account.default.add_user(@user, 'AccountAdmin')
+      Account.site_admin.account_users.create!(user: @user)
+      Account.default.account_users.create!(user: @user)
 
       @rubric = Rubric.create!(:user => @user, :context => @course)
-      RubricAssociation.create!(:rubric => @rubric, :context => @course, :purpose => :bookmark)
-      @course.rubric_associations.bookmarked.include_rubric.to_a.select(&:rubric_id).once_per(&:rubric_id).sort_by{|a| a.rubric.title }.map(&:rubric).should == [@rubric]
+      RubricAssociation.create!(:rubric => @rubric, :context => @course, :purpose => :bookmark, :association_object => @course)
+      expect(@course.rubric_associations.bookmarked.include_rubric.to_a.select(&:rubric_id).uniq(&:rubric_id).sort_by{|a| a.rubric.title }.map(&:rubric)).to eq [@rubric]
 
       delete 'destroy', :course_id => @course.id, :id => @rubric.id
-      response.should be_success
-      @course.rubric_associations.bookmarked.include_rubric.to_a.select(&:rubric_id).once_per(&:rubric_id).sort_by{|a| a.rubric.title }.map(&:rubric).should == []
+      expect(response).to be_success
+      expect(@course.rubric_associations.bookmarked.include_rubric.to_a.select(&:rubric_id).uniq(&:rubric_id).sort_by{|a| a.rubric.title }.map(&:rubric)).to eq []
       @rubric.reload
-      @rubric.deleted?.should be_true
+      expect(@rubric.deleted?).to be_truthy
     end
     it "should delete the rubric association even if the rubric doesn't belong to a course" do
       course_with_teacher_logged_in :active_all => true
-      Account.site_admin.add_user(@user, 'AccountAdmin')
-      Account.default.add_user(@user, 'AccountAdmin')
+      Account.site_admin.account_users.create!(user: @user)
+      Account.default.account_users.create!(user: @user)
       @user.reload
 
       @rubric = Rubric.create!(:user => @user, :context => Account.default)
-      RubricAssociation.create!(:rubric => @rubric, :context => @course, :purpose => :bookmark)
-      RubricAssociation.create!(:rubric => @rubric, :context => Account.default, :purpose => :bookmark)
-      @course.rubric_associations.bookmarked.include_rubric.to_a.select(&:rubric_id).once_per(&:rubric_id).sort_by{|a| a.rubric.title }.map(&:rubric).should == [@rubric]
+      RubricAssociation.create!(:rubric => @rubric, :context => @course, :purpose => :bookmark, :association_object => @course)
+      RubricAssociation.create!(:rubric => @rubric, :context => Account.default, :purpose => :bookmark, :association_object => @course)
+      expect(@course.rubric_associations.bookmarked.include_rubric.to_a.select(&:rubric_id).uniq(&:rubric_id).sort_by{|a| a.rubric.title }.map(&:rubric)).to eq [@rubric]
       
       delete 'destroy', :course_id => @course.id, :id => @rubric.id
-      response.should be_success
-      @course.rubric_associations.bookmarked.include_rubric.to_a.select(&:rubric_id).once_per(&:rubric_id).sort_by{|a| a.rubric.title }.map(&:rubric).should == []
+      expect(response).to be_success
+      expect(@course.rubric_associations.bookmarked.include_rubric.to_a.select(&:rubric_id).uniq(&:rubric_id).sort_by{|a| a.rubric.title }.map(&:rubric)).to eq []
       @rubric.reload
-      @rubric.deleted?.should be_false
+      expect(@rubric.deleted?).to be_falsey
+    end
+  end
+
+  describe "GET 'show'" do
+    before { course_with_teacher_logged_in(active_all: true) }
+
+    it "doesn't load nonsense" do
+      assert_page_not_found do
+        get 'show', id: "cats", course_id: @course.id
+      end
+    end
+
+    it "returns 404 if record doesn't exist" do
+      assert_page_not_found do
+        get 'show', id: "1", course_id: @course.id
+      end
+    end
+
+
+    it "works" do
+      r = Rubric.create! user: @teacher, context: Account.default
+      ra = RubricAssociation.create! rubric: r, context: @course,
+        purpose: :bookmark, association_object: @course
+      get 'show', id: r.id, course_id: @course.id
+      expect(response).to be_success
     end
   end
 end

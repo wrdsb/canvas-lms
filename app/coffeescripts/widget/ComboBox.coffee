@@ -116,10 +116,10 @@ define [
     # @api private
     # Build an <option> tag for an item.
     _buildOption: (item) =>
-      "<option value='#{@_value item}'>#{htmlEscape @_label item}</option>"
+      "<option value='#{htmlEscape @_value item}'>#{htmlEscape @_label item}</option>"
 
     ##
     # @api private
     # Convert an option label to the displayed selectmenu item.
     _formatOption: (label) =>
-      "<span class='ui-selectmenu-item'>#{label}</span>"
+      "<span class='ui-selectmenu-item'>#{htmlEscape label}</span>"

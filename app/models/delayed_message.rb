@@ -17,9 +17,18 @@
 #
 
 class DelayedMessage < ActiveRecord::Base
-  belongs_to :notification
+  include PolymorphicTypeOverride
+  override_polymorphic_types context_type: {'QuizSubmission' => 'Quizzes::QuizSubmission'}
+
+  include NotificationPreloader
   belongs_to :notification_policy
   belongs_to :context, :polymorphic => true
+  validates_inclusion_of :context_type, :allow_nil => true, :in => ['DiscussionEntry', 'Assignment',
+    'SubmissionComment', 'Submission', 'ConversationMessage', 'Course', 'DiscussionTopic',
+    'Enrollment', 'Attachment', 'AssignmentOverride', 'Quizzes::QuizSubmission', 'GroupMembership',
+    'CalendarEvent', 'WikiPage', 'AssessmentRequest', 'AccountUser', 'WebConference', 'Account', 'User',
+    'AppointmentGroup', 'Collaborator', 'AccountReport', 'Quizzes::QuizRegradeRun', 'CommunicationChannel',
+    'Alert']
   belongs_to :communication_channel
   attr_accessible :notification, :notification_policy, :frequency,
     :communication_channel, :linked_name, :name_of_topic, :link, :summary,
@@ -27,10 +36,10 @@ class DelayedMessage < ActiveRecord::Base
     :communication_channel_id, :context, :workflow_state, :root_account_id
 
   validates_length_of :summary, :maximum => maximum_text_length, :allow_nil => true, :allow_blank => true
-  validates_presence_of :communication_channel_id
+  validates_presence_of :communication_channel_id, :workflow_state
 
   before_save :set_send_at
-  
+
   def summary=(val)
     if !val || val.length < self.class.maximum_text_length
       write_attribute(:summary, val)
@@ -58,7 +67,7 @@ class DelayedMessage < ActiveRecord::Base
     when CommunicationChannel
       where(:communication_channel_id => context)
     else
-      where(:context_id => context, :context_type => context.class.base_ar_class.to_s)
+      where(:context_id => context, :context_type => context.class.base_class.to_s)
     end
   }
   
@@ -66,11 +75,11 @@ class DelayedMessage < ActiveRecord::Base
   
   scope :in_state, lambda { |state| where(:workflow_state => state.to_s) }
 
-  scope :to_summarize, lambda {
+  scope :to_summarize, -> {
     where("delayed_messages.workflow_state='pending' and delayed_messages.send_at<=?", Time.now.utc)
   }
   
-  scope :next_to_summarize, lambda {
+  scope :next_to_summarize, -> {
     where(:workflow_state => 'pending').order(:send_at).limit(1)
   }
   
@@ -97,7 +106,7 @@ class DelayedMessage < ActiveRecord::Base
   # should be deliverable. After this is run on a list of delayed messages,
   # the regular dispatch process will take place. 
   def self.summarize(delayed_message_ids)
-    delayed_messages = DelayedMessage.includes(:notification).where(:id => delayed_message_ids.uniq).compact
+    delayed_messages = DelayedMessage.where(id: delayed_message_ids.uniq)
     uniqs = {}
     # only include the most recent instance of each notification-context pairing
     delayed_messages.each do |m|
@@ -105,14 +114,16 @@ class DelayedMessage < ActiveRecord::Base
     end
     delayed_messages = uniqs.map{|key, val| val}.compact
     delayed_messages = delayed_messages.sort_by{|dm| [dm.notification.sort_order, dm.notification.category] }
-    first = delayed_messages.detect{|m| m.communication_channel}
+    first = delayed_messages.detect{|m| m.communication_channel &&
+                                    m.communication_channel.active? &&
+                                    !m.communication_channel.bouncing?}
     to = first.communication_channel rescue nil
     return nil unless to
     return nil if delayed_messages.empty?
     user = to.user rescue nil
     context = delayed_messages.select{|m| m.context}.compact.first.try(:context)
     return nil unless context # the context for this message has already been deleted
-    notification = Notification.by_name('Summaries')
+    notification = BroadcastPolicy.notification_finder.by_name('Summaries')
     path = HostUrl.outgoing_email_address
     message = to.messages.build(
       :subject => notification.subject,
@@ -150,8 +161,7 @@ class DelayedMessage < ActiveRecord::Base
         # Eastern. For other notifications, try and user the user's time zone,
         # defaulting to mountain. (Should be impossible to not find mountain, but
         # default to system time if necessary.)
-        zone_name = self.communication_channel.user.time_zone || 'Mountain Time (US & Canada)'
-        time_zone = ActiveSupport::TimeZone.us_zones.find{ |zone| zone.name == zone_name } || Time.zone
+        time_zone = self.communication_channel.user.time_zone || ActiveSupport::TimeZone['America/Denver'] || Time.zone
         target = time_zone.now.change(:hour => 18)
         target += 1.day if target < time_zone.now
       end

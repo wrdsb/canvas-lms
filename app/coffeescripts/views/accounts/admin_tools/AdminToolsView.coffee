@@ -17,6 +17,7 @@ define [
     # @api custom backbone
     @child 'restoreContentPaneView', '#restoreContentPane'
     @child 'messageContentPaneView', '#commMessagesPane'
+    @child 'loggingContentPaneView', '#loggingPane'
     @optionProperty 'tabs'
 
     template: template
@@ -33,5 +34,6 @@ define [
       json = super
       json.courseRestore = @tabs.courseRestore
       json.viewMessages = @tabs.viewMessages
+      json.logging = @tabs.logging
       json
 
